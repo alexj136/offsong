@@ -40,6 +40,8 @@ from typing import Dict, Iterable, List, Optional
 
 from flask import Flask, Response, abort, jsonify, redirect, render_template_string, request, send_from_directory, url_for
 
+import webchord
+
 try:
     from watchdog.events import FileSystemEventHandler
     from watchdog.observers import Observer
@@ -265,8 +267,21 @@ def render_song():
     transpose = int(request.args.get("transpose", 0))
 
     text = song_path.read_text(encoding="utf-8", errors="replace")
-    html_fragment = render_song_to_html(text, transpose=transpose)
-    return html_fragment
+
+    # Use the legacy WebChord converter (Python port) for HTML generation.
+    # webchord.chopro2html returns a full HTML document; extract the <body> content
+    # so it can be embedded inside our SPA shell.
+    full_html = webchord.chopro2html(text)
+    lower = full_html.lower()
+    body_start = lower.find("<body")
+    fragment = full_html
+    if body_start != -1:
+        body_tag_end = full_html.find(">", body_start)
+        body_end = lower.rfind("</body>")
+        if body_tag_end != -1 and body_end != -1 and body_end > body_tag_end:
+            fragment = full_html[body_tag_end + 1 : body_end]
+
+    return fragment
 
 
 @app.route("/events")
