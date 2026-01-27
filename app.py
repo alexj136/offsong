@@ -22,8 +22,6 @@ and automatically updates the rendering when the underlying file changes.
 Security note: This app only serves files under the configured base directory.
 
 Tested with: Python 3.10+.
-
-TODO: look into rendering with Webchord (https://sourceforge.net/projects/webchord/)
 """
 from __future__ import annotations
 
@@ -247,11 +245,34 @@ def index():
         if selected_path:
             return redirect(url_for("index", path=str(selected_path.relative_to(base_dir))))
 
+    # Derive base key (from {key: ...} directive) and current key after transpose
+    base_key: Optional[str] = None
+    current_key: Optional[str] = None
+    if selected_path:
+        try:
+            text = selected_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        for raw in text.splitlines():
+            m = DIRECTIVE_RE.match(raw)
+            if not m:
+                continue
+            key, val = m.group(1).lower(), m.group(2).strip()
+            if key in ("key", "k"):
+                base_key = val
+                prefer = ACCIDENTAL_PREFS.get(base_key.strip(), "sharp")
+                current_key = transpose_chord(base_key.strip(), transpose, prefer) if transpose else base_key.strip()
+                break
+
     page = MAIN_TEMPLATE
-    return render_template_string(page,
-                                  files=[(str(p.relative_to(base_dir)), p.name) for p in files],
-                                  selected=str(selected_path.relative_to(base_dir)) if selected_path else None,
-                                  transpose=transpose)
+    return render_template_string(
+        page,
+        files=[(str(p.relative_to(base_dir)), p.name) for p in files],
+        selected=str(selected_path.relative_to(base_dir)) if selected_path else None,
+        transpose=transpose,
+        base_key=base_key,
+        current_key=current_key,
+    )
 
 
 @app.route("/render")
@@ -268,6 +289,22 @@ def render_song():
 
     text = song_path.read_text(encoding="utf-8", errors="replace")
 
+    # Detect base key from {key: ...} directive (if present)
+    base_key: Optional[str] = None
+    for raw in text.splitlines():
+        m = DIRECTIVE_RE.match(raw)
+        if not m:
+            continue
+        key, val = m.group(1).lower(), m.group(2).strip()
+        if key in ("key", "k"):
+            base_key = val
+            break
+
+    # Apply transposition to the raw ChordPro before feeding it to WebChord.
+    prefer = ACCIDENTAL_PREFS.get((base_key or "C").strip(), "sharp")
+    if transpose:
+        text = "\n".join(transpose_line(line, transpose, prefer) for line in text.splitlines())
+
     # Use the legacy WebChord converter (Python port) for HTML generation.
     # webchord.chopro2html returns a full HTML document; extract the <body> content
     # so it can be embedded inside our SPA shell.
@@ -280,6 +317,18 @@ def render_song():
         body_end = lower.rfind("</body>")
         if body_tag_end != -1 and body_end != -1 and body_end > body_tag_end:
             fragment = full_html[body_tag_end + 1 : body_end]
+
+    # Prepend a metadata block showing the key, updated when transposed.
+    if base_key:
+        if transpose:
+            current_key = transpose_chord(base_key.strip(), transpose, prefer)
+            meta_html = (
+                f'<div class="meta">Key: {html.escape(base_key.strip())} '
+                f'→ {html.escape(current_key)}</div>'
+            )
+        else:
+            meta_html = f'<div class="meta">Key: {html.escape(base_key.strip())}</div>'
+        fragment = meta_html + fragment
 
     return fragment
 
@@ -395,9 +444,11 @@ MAIN_TEMPLATE = r"""
     .file.active { background: #0e1a2f; outline: 1px solid #1f334f; }
     .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
     .brand { font-weight: 800; letter-spacing: .6px; }
-    .controls { display: flex; gap: 8px; align-items: center; }
-    input[type="number"] { width: 68px; background: #0b1220; color: var(--fg); border: 1px solid #203047; border-radius: 8px; padding: 6px 8px; }
-    button { background: #0b1220; color: var(--fg); border: 1px solid #203047; border-radius: 10px; padding: 8px 10px; cursor: pointer; }
+.controls { display: flex; gap: 10px; align-items: center; }
+.key-display { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); }
+.key-main { font-size: 15px; color: var(--fg); font-weight: 600; }
+.transpose-buttons { display: flex; gap: 4px; }
+button { background: #0b1220; color: var(--fg); border: 1px solid #203047; border-radius: 10px; padding: 6px 10px; cursor: pointer; }
     button:hover { background: #0e1a2f; }
     .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
     .empty { color: var(--muted); padding: 10px; }
@@ -409,8 +460,25 @@ MAIN_TEMPLATE = r"""
     <div class="header">
       <div class="brand">🎸 Chord Viewer</div>
       <div class="controls">
-        <label>Transpose <input id="transpose" type="number" step="1" value="{{ transpose }}"/></label>
-        <button id="apply">Apply</button>
+        <div class="key-display">
+          {% if base_key %}
+            <span>Key</span>
+            <span class="key-main">
+              {% if transpose %}
+                {{ base_key }} → {{ current_key or base_key }}
+              {% else %}
+                {{ base_key }}
+              {% endif %}
+            </span>
+          {% else %}
+            <span class="key-main">Transpose</span>
+            <span>(no {key: ...} tag)</span>
+          {% endif %}
+        </div>
+        <div class="transpose-buttons">
+          <button id="down" title="Transpose down -1">&#8722;</button>
+          <button id="up" title="Transpose up +1">+</button>
+        </div>
       </div>
     </div>
     {% if files %}
@@ -431,14 +499,14 @@ MAIN_TEMPLATE = r"""
 (function(){
   const urlParams = new URLSearchParams(window.location.search);
   const sel = urlParams.get('path');
-  const transposeInput = document.getElementById('transpose');
-  const applyBtn = document.getElementById('apply');
+  let transpose = parseInt(urlParams.get('transpose') || '0', 10) || 0;
+  const btnDown = document.getElementById('down');
+  const btnUp = document.getElementById('up');
   const songEl = document.getElementById('song');
 
   function render(){
     if(!sel){ songEl.innerHTML = '<div class="empty">Pick a file from the left.</div>'; return; }
-    const t = parseInt(transposeInput.value || '0', 10) || 0;
-    fetch(`/render?path=${encodeURIComponent(sel)}&transpose=${t}`)
+    fetch(`/render?path=${encodeURIComponent(sel)}&transpose=${transpose}`)
       .then(r => r.text())
       .then(html => { songEl.innerHTML = html; })
       .catch(err => { songEl.innerHTML = `<div class="empty">Error: ${err}</div>`; });
@@ -446,7 +514,6 @@ MAIN_TEMPLATE = r"""
 
   function startSSE(){
     if(!sel) return;
-    const t = parseInt(transposeInput.value || '0', 10) || 0;
     const es = new EventSource(`/events?path=${encodeURIComponent(sel)}`);
     es.onmessage = (ev) => {
       if(ev.data === 'reload') { render(); }
@@ -455,13 +522,26 @@ MAIN_TEMPLATE = r"""
     es.onerror = () => { /* browser will reconnect automatically */ };
   }
 
-  applyBtn.addEventListener('click', () => {
-    const t = transposeInput.value || '0';
+  function updateLocation() {
+    const t = String(transpose || 0);
     const url = new URL(window.location);
     url.searchParams.set('transpose', t);
     if(sel) url.searchParams.set('path', sel);
     window.location = url.toString();
-  });
+  }
+
+  if (btnDown) {
+    btnDown.addEventListener('click', () => {
+      transpose = (transpose || 0) - 1;
+      updateLocation();
+    });
+  }
+  if (btnUp) {
+    btnUp.addEventListener('click', () => {
+      transpose = (transpose || 0) + 1;
+      updateLocation();
+    });
+  }
 
   render();
   startSSE();
