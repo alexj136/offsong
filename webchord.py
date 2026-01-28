@@ -198,6 +198,10 @@ def chopro2html(chopro: str) -> str:
             if lower.startswith("title:") or lower.startswith("t:"):
                 value = inner.split(":", 1)[1]
                 out.append(f"<H1>{value}</H1>\n")
+            # Artist (rendered similar to subtitle, under the title)
+            elif lower.startswith("artist:") or lower.startswith("a:"):
+                value = inner.split(":", 1)[1]
+                out.append(f"<H2>{value}</H2>\n")
             # Subtitle
             elif lower.startswith("subtitle:") or lower.startswith("st:"):
                 value = inner.split(":", 1)[1]

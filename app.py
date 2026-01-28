@@ -128,96 +128,86 @@ def transpose_line(line: str, semitones: int, prefer: str) -> str:
         return f"[{transpose_chord(inside, semitones, prefer)}]"
     return CHORD_RE.sub(_repl, line)
 
-# --------------------- ChordPro → HTML renderer ---------------------
+# --------------------- ChordPro helpers ---------------------
 
-def render_song_to_html(text: str, *, transpose: int = 0, key_hint: Optional[str] = None) -> str:
-    """Render a subset of ChordPro/OnSong to HTML. Returns an HTML fragment (no <html> wrapper)."""
-    prefer = ACCIDENTAL_PREFS.get((key_hint or "C").strip(), "sharp")
-    chor_stack: List[str] = []
-
-    title = None
-    subtitle = None
-    meta_lines: List[str] = []
-    body_html: List[str] = []
-
-    lines = text.splitlines()
-    for raw in lines:
-        line = raw.rstrip("\n")
-        # Directives
-        d = DIRECTIVE_RE.match(line)
-        if d:
-            key, val = d.group(1).lower(), d.group(2)
-            if key in ("title", "t"):
-                title = val
-            elif key in ("subtitle", "st"):
-                subtitle = val
-            elif key in ("artist", "a"):
-                meta_lines.append(f"Artist: {html.escape(val)}")
-            elif key in ("key", "k"):
-                meta_lines.append(f"Key: {html.escape(val)}")
-                key_hint = val
-                prefer = ACCIDENTAL_PREFS.get(val.strip(), prefer)
-            elif key in ("capo", "c"):
-                meta_lines.append(f"Capo: {html.escape(val)}")
-            elif key in ("comment", "c"):
-                body_html.append(f'<div class="comment">{html.escape(val)}</div>')
-            elif key in START_DIRECTIVES:
-                cls = "chorus" if "chorus" in key or key == "soc" else "bridge"
-                body_html.append(f'<div class="section {cls}">')
-                chor_stack.append(cls)
-            elif key in END_DIRECTIVES:
-                if chor_stack:
-                    body_html.append("</div>")
-                    chor_stack.pop()
-            # Ignore unknown directives gracefully
-            continue
-
-        # OnSong style section labels like "Verse:" or "Chorus:" on their own line
-        if re.match(r"^[A-Za-z][A-Za-z0-9 ]+:\s*$", line):
-            hdr = line.rstrip(": ")
-            body_html.append(f'<div class="section-label">{html.escape(hdr)}</div>')
-            continue
-
-        # Empty line => paragraph spacing
-        if not line.strip():
-            body_html.append('<div class="spacer"></div>')
-            continue
-
-        # Optionally transpose chord tags
-        if transpose:
-            line = transpose_line(line, transpose, prefer)
-
-        # Convert [Chord] tokens to HTML spans; keep the lyrics intact.
-        pos = 0
-        out: List[str] = []
-        for m in CHORD_RE.finditer(line):
-            # preceding lyrics
-            lyrics = line[pos:m.start()]
-            if lyrics:
-                out.append(html.escape(lyrics))
-            chord_txt = m.group(1)
-            # If the chord is immediately before a space or end, add a non‑breaking space anchor
-            following = line[m.end():m.end()+1]
-            anchor = "&nbsp;" if (not following or following.isspace()) else ""
-            out.append(f'<span class="chord">{html.escape(chord_txt)}</span>{anchor}')
-            pos = m.end()
-        # tail lyrics
-        out.append(html.escape(line[pos:]))
-        body_html.append(f'<div class="line">{"".join(out)}</div>')
-
-    # Assemble the card
-    title_html = f'<h1 class="title">{html.escape(title) if title else "Untitled"}</h1>'
-    subtitle_html = f'<div class="subtitle">{html.escape(subtitle)}</div>' if subtitle else ""
-    meta_html = ("<div class=\"meta\">" + " · ".join(meta_lines) + "</div>") if meta_lines else ""
-
-    return f"""
-    <div class="song">
-      {title_html}
-      {subtitle_html}
-      {meta_html}
-      <div class="song-body">{''.join(body_html)}</div>
-    </div>
+def prepare_chopro(text: str) -> tuple[str, Optional[str]]:
     """
+    Normalize ChordPro text:
+    - If there are no {title}/{artist}/{key} tags at the top, assume:
+      first non-empty line = title, second = artist, a line like "Key: G"
+      gives the key, and convert these into proper ChordPro directives.
+    - Return (possibly modified_text, base_key).
+    """
+    lines = text.splitlines()
+    if not lines:
+        return text, None
+
+    # Find indices of the first few non-empty lines
+    non_empty_indices = [i for i, l in enumerate(lines) if l.strip()]
+    if not non_empty_indices:
+        return text, None
+
+    # Check if any of the first 3 non-empty lines are already ChordPro directives.
+    has_directive_at_top = False
+    for idx in non_empty_indices[:3]:
+        stripped = lines[idx].lstrip()
+        if stripped.startswith("{") and "}" in stripped:
+            has_directive_at_top = True
+            break
+
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    inferred_key: Optional[str] = None
+    consumed_indices: set[int] = set()
+
+    if not has_directive_at_top:
+        # Infer title and artist from first two non-empty lines
+        if len(non_empty_indices) >= 1:
+            i = non_empty_indices[0]
+            title = lines[i].strip()
+            consumed_indices.add(i)
+        if len(non_empty_indices) >= 2:
+            i = non_empty_indices[1]
+            artist = lines[i].strip()
+            consumed_indices.add(i)
+
+        # Look for a loose "Key: X" style line among the next few non-empty lines
+        key_pattern = re.compile(r"^\s*key\s*:\s*(.+)$", re.IGNORECASE)
+        for i in non_empty_indices[2:8]:
+            m = key_pattern.match(lines[i])
+            if m:
+                inferred_key = m.group(1).strip()
+                consumed_indices.add(i)
+                break
+
+        # Build new text with synthetic ChordPro directives at the top
+        new_lines: List[str] = []
+        if title:
+            new_lines.append(f"{{title: {title}}}")
+        if artist:
+            new_lines.append(f"{{artist: {artist}}}")
+        if inferred_key:
+            new_lines.append(f"{{key: {inferred_key}}}")
+
+        for idx, l in enumerate(lines):
+            if idx in consumed_indices:
+                continue
+            new_lines.append(l)
+
+        text = "\n".join(new_lines)
+
+    # Now that text is normalized, extract base key from proper directives
+    base_key: Optional[str] = None
+    for raw in text.splitlines():
+        m = DIRECTIVE_RE.match(raw)
+        if not m:
+            continue
+        key, val = m.group(1).lower(), m.group(2).strip()
+        if key in ("key", "k"):
+            base_key = val
+            break
+
+    return text, base_key
 
 # ------------------------------ Routes ------------------------------
 
@@ -245,7 +235,7 @@ def index():
         if selected_path:
             return redirect(url_for("index", path=str(selected_path.relative_to(base_dir))))
 
-    # Derive base key (from {key: ...} directive) and current key after transpose
+    # Derive base key (from ChordPro, with heuristics) and current key after transpose
     base_key: Optional[str] = None
     current_key: Optional[str] = None
     if selected_path:
@@ -253,16 +243,10 @@ def index():
             text = selected_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             text = ""
-        for raw in text.splitlines():
-            m = DIRECTIVE_RE.match(raw)
-            if not m:
-                continue
-            key, val = m.group(1).lower(), m.group(2).strip()
-            if key in ("key", "k"):
-                base_key = val
-                prefer = ACCIDENTAL_PREFS.get(base_key.strip(), "sharp")
-                current_key = transpose_chord(base_key.strip(), transpose, prefer) if transpose else base_key.strip()
-                break
+        _, base_key = prepare_chopro(text)
+        if base_key:
+            prefer = ACCIDENTAL_PREFS.get(base_key.strip(), "sharp")
+            current_key = transpose_chord(base_key.strip(), transpose, prefer) if transpose else base_key.strip()
 
     page = MAIN_TEMPLATE
     return render_template_string(
@@ -287,20 +271,12 @@ def render_song():
 
     transpose = int(request.args.get("transpose", 0))
 
-    text = song_path.read_text(encoding="utf-8", errors="replace")
+    raw_text = song_path.read_text(encoding="utf-8", errors="replace")
 
-    # Detect base key from {key: ...} directive (if present)
-    base_key: Optional[str] = None
-    for raw in text.splitlines():
-        m = DIRECTIVE_RE.match(raw)
-        if not m:
-            continue
-        key, val = m.group(1).lower(), m.group(2).strip()
-        if key in ("key", "k"):
-            base_key = val
-            break
+    # Normalize ChordPro and extract base key (including heuristics for plain text)
+    text, base_key = prepare_chopro(raw_text)
 
-    # Apply transposition to the raw ChordPro before feeding it to WebChord.
+    # Apply transposition to the normalized ChordPro before feeding it to WebChord.
     prefer = ACCIDENTAL_PREFS.get((base_key or "C").strip(), "sharp")
     if transpose:
         text = "\n".join(transpose_line(line, transpose, prefer) for line in text.splitlines())
@@ -472,7 +448,6 @@ button { background: #0b1220; color: var(--fg); border: 1px solid #203047; borde
             </span>
           {% else %}
             <span class="key-main">Transpose</span>
-            <span>(no {key: ...} tag)</span>
           {% endif %}
         </div>
         <div class="transpose-buttons">
