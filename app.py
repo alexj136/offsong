@@ -89,6 +89,14 @@ ACCIDENTAL_PREFS = {
 CHORD_TOKEN_RE = re.compile(r"([A-G](?:#|b)?)(.*)")  # split root note from the rest (maj/min/7/etc)
 
 
+def _normalize_key_value(val: str) -> str:
+    """Normalize key strings, tolerating optional surrounding square brackets."""
+    v = val.strip()
+    if len(v) >= 2 and v.startswith("[") and v.endswith("]"):
+        v = v[1:-1].strip()
+    return v
+
+
 def transpose_chord(chord: str, semitones: int, prefer: str = "sharp") -> str:
     """Transpose a single chord root by semitones, keeping suffix (m,7,add9...) intact."""
     m = CHORD_TOKEN_RE.match(chord.strip())
@@ -176,7 +184,7 @@ def prepare_chopro(text: str) -> tuple[str, Optional[str]]:
         for i in non_empty_indices[2:8]:
             m = key_pattern.match(lines[i])
             if m:
-                inferred_key = m.group(1).strip()
+                inferred_key = _normalize_key_value(m.group(1))
                 consumed_indices.add(i)
                 break
 
@@ -204,7 +212,7 @@ def prepare_chopro(text: str) -> tuple[str, Optional[str]]:
             continue
         key, val = m.group(1).lower(), m.group(2).strip()
         if key in ("key", "k"):
-            base_key = val
+            base_key = _normalize_key_value(val)
             break
 
     return text, base_key
@@ -246,8 +254,9 @@ def index():
             text = ""
         _, base_key = prepare_chopro(text)
         if base_key:
-            prefer = ACCIDENTAL_PREFS.get(base_key.strip(), "sharp")
-            current_key = transpose_chord(base_key.strip(), transpose, prefer) if transpose else base_key.strip()
+            base_clean = base_key.strip()
+            prefer = ACCIDENTAL_PREFS.get(base_clean, "sharp")
+            current_key = transpose_chord(base_clean, transpose, prefer) if transpose else base_clean
 
     page = MAIN_TEMPLATE
     return render_template_string(
@@ -297,14 +306,16 @@ def render_song():
 
     # Prepend a metadata block showing the key, updated when transposed.
     if base_key:
+        base_clean = base_key.strip()
+        label = f"Key: {html.escape(base_clean)}"
         if transpose:
-            current_key = transpose_chord(base_key.strip(), transpose, prefer)
-            meta_html = (
-                f'<div class="meta">Key: {html.escape(base_key.strip())} '
-                f'→ {html.escape(current_key)}</div>'
-            )
-        else:
-            meta_html = f'<div class="meta">Key: {html.escape(base_key.strip())}</div>'
+            current_key = transpose_chord(base_clean, transpose, prefer)
+            if current_key != base_clean:
+                label = (
+                    f"Key: {html.escape(base_clean)} "
+                    f"→ {html.escape(current_key)}"
+                )
+        meta_html = f'<div class="meta">{label}</div>'
         fragment = meta_html + fragment
 
     return fragment
@@ -441,7 +452,7 @@ MAIN_TEMPLATE = r"""
           {% if base_key %}
             <span>Key</span>
             <span class="key-main">
-              {% if transpose %}
+              {% if transpose and current_key and current_key != base_key %}
                 {{ base_key }} → {{ current_key or base_key }}
               {% else %}
                 {{ base_key }}

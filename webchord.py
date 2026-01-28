@@ -22,6 +22,7 @@ import cgi
 import datetime
 import html
 import os
+import re
 import sys
 from typing import List, Tuple
 
@@ -228,6 +229,15 @@ def chopro2html(chopro: str) -> str:
                 mode &= ~2
             else:
                 out.append(f"<!--Unsupported command: {inner}-->\n")
+            continue
+
+        # Standalone section headings like "Chorus:", "Chorus 1:", "Verse 2:", "Bridge:", "Pre-Chorus:", etc.
+        # Matches any word (optionally with a number or hyphenated) followed by a colon, as a complete line.
+        heading_match = re.match(r"^\s*([A-Za-z][A-Za-z0-9\- ]*?)\s*:\s*$", line)
+        if heading_match:
+            # Strip trailing colon and whitespace for display
+            heading_text = heading_match.group(1).strip()
+            out.append(f"<H4>{heading_text}</H4>\n")
             continue
 
         # Regular line with chords/lyrics
