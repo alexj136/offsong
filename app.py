@@ -223,7 +223,8 @@ def list_song_files(base_dir: Path) -> List[Path]:
 def index():
     # Resolve base directory from config
     base_dir = app.config["BASE_DIR"]
-    files = list_song_files(base_dir)
+    # Use cached file list to avoid rescanning large trees on every request
+    files: List[Path] = app.config.get("SONG_FILES") or []
     selected = request.args.get("path")
     transpose = int(request.args.get("transpose", 0))
 
@@ -420,11 +421,11 @@ MAIN_TEMPLATE = r"""
     .file.active { background: #0e1a2f; outline: 1px solid #1f334f; }
     .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
     .brand { font-weight: 800; letter-spacing: .6px; }
-.controls { display: flex; gap: 10px; align-items: center; }
-.key-display { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); }
-.key-main { font-size: 15px; color: var(--fg); font-weight: 600; }
-.transpose-buttons { display: flex; gap: 4px; }
-button { background: #0b1220; color: var(--fg); border: 1px solid #203047; border-radius: 10px; padding: 6px 10px; cursor: pointer; }
+    .controls { display: flex; gap: 10px; align-items: center; }
+    .key-display { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); }
+    .key-main { font-size: 15px; color: var(--fg); font-weight: 600; }
+    .transpose-buttons { display: flex; gap: 4px; }
+    button { background: #0b1220; color: var(--fg); border: 1px solid #203047; border-radius: 10px; padding: 6px 10px; cursor: pointer; }
     button:hover { background: #0e1a2f; }
     .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
     .empty { color: var(--muted); padding: 10px; }
@@ -458,7 +459,7 @@ button { background: #0b1220; color: var(--fg); border: 1px solid #203047; borde
     </div>
     {% if files %}
       {% for rel, name in files %}
-        <a class="file {% if selected == rel %}active{% endif %}" href="{{ url_for('index') }}?path={{ rel }}&transpose={{ transpose }}">{{ name }}</a>
+        <a class="file {% if selected == rel %}active{% endif %}" data-path="{{ rel }}" href="{{ url_for('index') }}?path={{ rel }}&transpose={{ transpose }}">{{ name }}</a>
       {% endfor %}
       <div class="hint">Watching current file for changes…</div>
     {% else %}
@@ -473,11 +474,13 @@ button { background: #0b1220; color: var(--fg); border: 1px solid #203047; borde
 <script>
 (function(){
   const urlParams = new URLSearchParams(window.location.search);
-  const sel = urlParams.get('path');
+  let sel = urlParams.get('path');
   let transpose = parseInt(urlParams.get('transpose') || '0', 10) || 0;
   const btnDown = document.getElementById('down');
   const btnUp = document.getElementById('up');
   const songEl = document.getElementById('song');
+  const fileLinks = document.querySelectorAll('.file');
+  let es = null;
 
   function render(){
     if(!sel){ songEl.innerHTML = '<div class="empty">Pick a file from the left.</div>'; return; }
@@ -489,7 +492,10 @@ button { background: #0b1220; color: var(--fg); border: 1px solid #203047; borde
 
   function startSSE(){
     if(!sel) return;
-    const es = new EventSource(`/events?path=${encodeURIComponent(sel)}`);
+    if (es) {
+      es.close();
+    }
+    es = new EventSource(`/events?path=${encodeURIComponent(sel)}`);
     es.onmessage = (ev) => {
       if(ev.data === 'reload') { render(); }
     };
@@ -502,21 +508,37 @@ button { background: #0b1220; color: var(--fg); border: 1px solid #203047; borde
     const url = new URL(window.location);
     url.searchParams.set('transpose', t);
     if(sel) url.searchParams.set('path', sel);
-    window.location = url.toString();
+    history.replaceState(null, '', url.toString());
   }
 
   if (btnDown) {
     btnDown.addEventListener('click', () => {
       transpose = (transpose || 0) - 1;
       updateLocation();
+      render();
     });
   }
   if (btnUp) {
     btnUp.addEventListener('click', () => {
       transpose = (transpose || 0) + 1;
       updateLocation();
+      render();
     });
   }
+
+  // Intercept song link clicks to avoid full page reloads
+  fileLinks.forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const path = link.getAttribute('data-path');
+      if (!path) return;
+      sel = path;
+      fileLinks.forEach(l => l.classList.toggle('active', l === link));
+      updateLocation();
+      render();
+      startSSE();
+    });
+  });
 
   render();
   startSSE();
@@ -541,6 +563,9 @@ def main():
 
     app.config["BASE_DIR"] = base_dir
     app.config["STATIC_DIR"] = base_dir  # not used, but kept for completeness
+    # Cache the list of song files once at startup so navigating between songs
+    # or transposing does not require rescanning large directory trees.
+    app.config["SONG_FILES"] = list_song_files(base_dir)
 
     # Start watchdog observer
     handler = ReloadHandler(base_dir)
