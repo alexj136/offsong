@@ -1,3 +1,9 @@
+# Offsong
+
+A vibe-coded ChordPro renderer that runs in a web browser.
+
+## Setup
+
 On Ubuntu:
 ```
 sudo apt install python3-flask python3-watchdog
