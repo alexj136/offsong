@@ -18,13 +18,15 @@ Output:
   - Complete HTML document with inline CSS styling and chords/lyrics layout.
 """
 
-import cgi
 import datetime
 import html
 import os
 import re
 import sys
-from typing import List, Tuple
+from email import message_from_bytes
+from email.policy import HTTP
+from typing import List, Optional, Tuple
+from urllib.parse import parse_qs
 
 
 LOG_PATH = "/var/log/webchord.log"
@@ -247,32 +249,65 @@ def chopro2html(chopro: str) -> str:
     return "".join(out)
 
 
-def main() -> None:
-    # Parse CGI input
-    form = cgi.FieldStorage()
-    field = form.getfirst("chordpro")
+def _read_cgi_body() -> bytes:
+    content_length = int(os.environ.get("CONTENT_LENGTH") or 0)
+    if content_length <= 0:
+        return b""
+    return sys.stdin.buffer.read(content_length)
 
-    # When uploaded as file, FieldStorage may store it as a file item
-    if "chordpro" in form and hasattr(form["chordpro"], "file"):
-        file_item = form["chordpro"]
-        if getattr(file_item, "filename", None):
-            log(f"Upload: file name={file_item.filename}")
-            data = file_item.file.read()
-            try:
-                chopro = data.decode("utf-8", errors="replace")
-            except AttributeError:
-                # Already str
-                chopro = str(data)
-        else:
-            # Text field
+
+def _parse_multipart_chordpro(body: bytes, content_type: str) -> Tuple[Optional[str], Optional[str], Optional[bytes]]:
+    """Return (text_value, upload_filename, upload_bytes) for the chordpro field."""
+    header = f"Content-Type: {content_type}\r\n\r\n".encode("latin-1", errors="replace")
+    msg = message_from_bytes(header + body, policy=HTTP)
+    for part in msg.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if name != "chordpro":
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            payload = b""
+        filename = part.get_filename()
+        if filename:
+            return None, filename, payload
+        return payload.decode("utf-8", errors="replace"), None, None
+    return None, None, None
+
+
+def _parse_cgi_chordpro() -> Optional[str]:
+    """Parse CGI GET/POST input and return the chordpro field value."""
+    method = os.environ.get("REQUEST_METHOD", "GET").upper()
+    if method == "GET":
+        values = parse_qs(os.environ.get("QUERY_STRING", ""), keep_blank_values=True).get("chordpro", [])
+        if values:
             log("Text box used.")
-            chopro = field or ""
-    else:
-        if field is None:
-            bailout("No chordpro parameter")
-            return
+        return values[0] if values else None
+
+    content_type = os.environ.get("CONTENT_TYPE", "")
+    body = _read_cgi_body()
+    if not body:
+        return None
+
+    if content_type.startswith("multipart/form-data"):
+        text_value, filename, upload_bytes = _parse_multipart_chordpro(body, content_type)
+        if upload_bytes is not None:
+            log(f"Upload: file name={filename}")
+            return upload_bytes.decode("utf-8", errors="replace")
+        if text_value is not None:
+            log("Text box used.")
+        return text_value
+
+    values = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True).get("chordpro", [])
+    if values:
         log("Text box used.")
-        chopro = field
+    return values[0] if values else None
+
+
+def main() -> None:
+    chopro = _parse_cgi_chordpro()
+    if chopro is None:
+        bailout("No chordpro parameter")
+        return
 
     # Emit header and HTML body
     sys.stdout.write("Content-Type: text/html; charset=utf-8\n\n")
