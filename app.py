@@ -13,7 +13,7 @@ and automatically updates the rendering when the underlying file changes.
   - Inline [Chord] notation with clean, readable styling
   - Optional transposition via query string (?transpose=+2 or ?transpose=-3)
   - Live reload in the browser when the file changes (via Server‑Sent Events + watchdog)
-  - Client-side setlists (YAML in localStorage): name, date, and songs[{path, key}]; no server writes
+  - Client-side setlists (YAML in localStorage): name, date, note, and songs[{path, key, note}]; no server writes
 
 - Quick start
   1) Install deps:  pip install flask watchdog
@@ -508,7 +508,7 @@ MAIN_TEMPLATE = r"""
     }
     .container { display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
     aside { background: var(--panel); padding: 12px; border-right: 1px solid #1f2937; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
-    main { height: 100vh; overflow: auto; padding: 24px; }
+    main { height: 100vh; overflow: auto; padding: 24px; display: flex; flex-direction: column; position: relative; }
     h1.title { margin: 0 0 6px 0; font-size: 28px; letter-spacing: .5px; }
     .subtitle { color: var(--muted); margin-bottom: 8px; }
     .meta { color: var(--muted); margin-bottom: 18px; font-size: 14px; }
@@ -586,6 +586,59 @@ MAIN_TEMPLATE = r"""
     .add-row { display: flex; gap: 6px; align-items: center; }
     .item-actions { display: flex; gap: 3px; }
     .songs-list, .setlists-list, .setlist-songs { display: flex; flex-direction: column; gap: 4px; }
+
+    .notes-pane { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; flex: 0 0 auto; }
+    .notes-pane[hidden], .note-card[hidden], .notes-compact[hidden] { display: none !important; }
+    .notes-pane.is-compact-only { margin-bottom: 0; gap: 0; }
+    .notes-compact {
+      position: absolute; top: 12px; right: 16px; z-index: 5;
+      display: flex; gap: 6px; pointer-events: none;
+    }
+    .notes-compact > * { pointer-events: auto; }
+    .note-compact-btn {
+      font-size: 11px; font-weight: 600; letter-spacing: .02em;
+      padding: 4px 9px; border-radius: 999px; background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(4px);
+    }
+    .note-compact-setlist { color: var(--accent); border-color: rgba(56, 189, 248, 0.45); }
+    .note-compact-setlist:hover { background: rgba(56, 189, 248, 0.15); }
+    .note-compact-song { color: var(--accent-2); border-color: rgba(167, 139, 250, 0.5); }
+    .note-compact-song:hover { background: rgba(167, 139, 250, 0.15); }
+    .note-card {
+      border-radius: 12px; padding: 10px 12px; border: 1px solid transparent;
+    }
+    .note-card-setlist {
+      background: rgba(56, 189, 248, 0.08);
+      border-color: rgba(56, 189, 248, 0.35);
+    }
+    .note-card-song {
+      background: rgba(167, 139, 250, 0.08);
+      border-color: rgba(167, 139, 250, 0.4);
+    }
+    .note-card-header {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px;
+    }
+    .note-card-label {
+      font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    }
+    .note-card-setlist .note-card-label { color: var(--accent); }
+    .note-card-song .note-card-label { color: var(--accent-2); }
+    .note-card-body {
+      font-size: 14px; line-height: 1.45; color: var(--fg); min-height: 1.4em;
+    }
+    .note-card-body strong { font-weight: 700; }
+    .note-card-body em { font-style: italic; }
+    .note-card-body code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.92em; background: rgba(15, 23, 42, 0.55); padding: 1px 5px; border-radius: 4px;
+    }
+    .note-card-editor {
+      width: 100%; min-height: 4.5em; resize: vertical;
+      background: #0b1220; color: var(--fg); border: 1px solid #203047;
+      border-radius: 8px; padding: 8px; font-size: 14px; line-height: 1.4;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .note-card-hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -671,6 +724,30 @@ MAIN_TEMPLATE = r"""
     </div>
   </aside>
   <main>
+    <div id="notes-pane" class="notes-pane" hidden>
+      <div id="notes-compact" class="notes-compact" hidden>
+        <button type="button" class="note-compact-btn note-compact-setlist" id="compact-setlist-note" title="Add setlist note">+ Setlist note</button>
+        <button type="button" class="note-compact-btn note-compact-song" id="compact-song-note" hidden title="Add song note">+ Song note</button>
+      </div>
+      <section class="note-card note-card-setlist" id="setlist-note-card" hidden>
+        <div class="note-card-header">
+          <span class="note-card-label">Setlist note</span>
+          <button type="button" class="small" id="toggle-setlist-note-edit">Edit</button>
+        </div>
+        <div class="note-card-body" id="setlist-note-view"></div>
+        <textarea id="setlist-note-edit" class="note-card-editor" hidden placeholder="Setlist-wide note… **bold**, __italics__, `code`"></textarea>
+        <div class="note-card-hint" id="setlist-note-hint" hidden>**bold** · __italics__ · `code`</div>
+      </section>
+      <section class="note-card note-card-song" id="song-note-card" hidden>
+        <div class="note-card-header">
+          <span class="note-card-label">Song note</span>
+          <button type="button" class="small" id="toggle-song-note-edit">Edit</button>
+        </div>
+        <div class="note-card-body" id="song-note-view"></div>
+        <textarea id="song-note-edit" class="note-card-editor" hidden placeholder="Note for this song… **bold**, __italics__, `code`"></textarea>
+        <div class="note-card-hint" id="song-note-hint" hidden>**bold** · __italics__ · `code`</div>
+      </section>
+    </div>
     <div id="song"></div>
   </main>
 </div>
@@ -702,9 +779,9 @@ MAIN_TEMPLATE = r"""
   const fileLinks = document.querySelectorAll("#panel-songs .file");
   let es = null;
 
-  // ---- YAML codec for setlist files: name / date / songs[{path,key}] ----
+  // ---- YAML codec for setlist files: name / date / note / songs[{path,key,note}] ----
   function escapeYamlString(s) {
-    if (s === "" || /[:#\n\r\t{}[\],&*!|>'"%@`]/.test(s) || /^\s|\s$/.test(s)) {
+    if (s === "" || /[:#\n\r\t{}[\],&*!|>'"%@`_]/.test(s) || /^\s|\s$/.test(s)) {
       return JSON.stringify(s);
     }
     return s;
@@ -727,13 +804,14 @@ MAIN_TEMPLATE = r"""
   }
 
   function emptySetlist(name, date) {
-    return { name: name || "Untitled", date: date || todayISO(), songs: [] };
+    return { name: name || "Untitled", date: date || todayISO(), note: "", songs: [] };
   }
 
   function setlistToYaml(doc) {
     const songs = Array.isArray(doc.songs) ? doc.songs : [];
     let out = `name: ${escapeYamlString(doc.name || "")}\n`;
     out += `date: ${escapeYamlString(doc.date || "")}\n`;
+    out += `note: ${escapeYamlString(doc.note || "")}\n`;
     out += "songs:\n";
     if (!songs.length) {
       out += "  []\n";
@@ -742,6 +820,7 @@ MAIN_TEMPLATE = r"""
     for (const song of songs) {
       out += `  - path: ${escapeYamlString(song.path || "")}\n`;
       out += `    key: ${escapeYamlString(song.key || "")}\n`;
+      out += `    note: ${escapeYamlString(song.note || "")}\n`;
     }
     return out;
   }
@@ -761,11 +840,13 @@ MAIN_TEMPLATE = r"""
         const item = line.match(/^\s*-\s+path\s*:\s*(.*)$/);
         if (item) {
           if (current) songs.push(current);
-          current = { path: parseYamlScalar(item[1]), key: "" };
+          current = { path: parseYamlScalar(item[1]), key: "", note: "" };
           continue;
         }
         const keyLine = line.match(/^\s+key\s*:\s*(.*)$/);
         if (keyLine && current) current.key = parseYamlScalar(keyLine[1]);
+        const noteLine = line.match(/^\s+note\s*:\s*(.*)$/);
+        if (noteLine && current) current.note = parseYamlScalar(noteLine[1]);
       }
       if (current) songs.push(current);
       doc.songs = songs.filter(s => s.path);
@@ -785,6 +866,11 @@ MAIN_TEMPLATE = r"""
         doc.date = parseYamlScalar(dateLine[1]);
         continue;
       }
+      const topNote = line.match(/^\s*note\s*:\s*(.*)$/);
+      if (topNote && !inSongs) {
+        doc.note = parseYamlScalar(topNote[1]);
+        continue;
+      }
       if (/^\s*songs\s*:\s*$/.test(line)) {
         inSongs = true;
         continue;
@@ -799,17 +885,23 @@ MAIN_TEMPLATE = r"""
       const item = line.match(/^\s*-\s+path\s*:\s*(.*)$/);
       if (item) {
         if (current) songs.push(current);
-        current = { path: parseYamlScalar(item[1]), key: "" };
+        current = { path: parseYamlScalar(item[1]), key: "", note: "" };
         continue;
       }
       const keyLine = line.match(/^\s+key\s*:\s*(.*)$/);
       if (keyLine && current) {
         current.key = parseYamlScalar(keyLine[1]);
+        continue;
+      }
+      const noteLine = line.match(/^\s+note\s*:\s*(.*)$/);
+      if (noteLine && current) {
+        current.note = parseYamlScalar(noteLine[1]);
       }
     }
     if (current) songs.push(current);
     doc.songs = songs.filter(s => s.path);
     if (!doc.date) doc.date = todayISO();
+    if (doc.note == null) doc.note = "";
     return doc;
   }
 
@@ -846,7 +938,12 @@ MAIN_TEMPLATE = r"""
     const normalized = {
       name: (doc.name || "Untitled").trim() || "Untitled",
       date: doc.date || todayISO(),
-      songs: Array.isArray(doc.songs) ? doc.songs : []
+      note: doc.note || "",
+      songs: Array.isArray(doc.songs) ? doc.songs.map(s => ({
+        path: s.path || "",
+        key: s.key || "",
+        note: s.note || ""
+      })) : []
     };
     localStorage.setItem(setlistFileKey(id), setlistToYaml(normalized));
     const ids = listSetlistIds();
@@ -979,6 +1076,7 @@ MAIN_TEMPLATE = r"""
     if (setlistSongIndex != null) lastSetlistSongIndex = setlistSongIndex;
     setActiveSongLink(path);
     startSSE();
+    syncNotesPane();
     const loadId = ++songLoadId;
     fetchMeta(path).then(meta => {
       if (path !== sel) return;
@@ -986,6 +1084,7 @@ MAIN_TEMPLATE = r"""
       // If the user already transposed (or opened another song), keep their transpose
       if (loadId !== songLoadId) {
         updateKeyDisplay();
+        syncNotesPane();
         return;
       }
       if (desiredKey && currentBaseKey) {
@@ -998,6 +1097,7 @@ MAIN_TEMPLATE = r"""
       updateKeyDisplay();
       render();
       renderSetlistDetail();
+      syncNotesPane();
     }).catch(() => {
       if (path !== sel || loadId !== songLoadId) return;
       currentBaseKey = null;
@@ -1005,6 +1105,7 @@ MAIN_TEMPLATE = r"""
       updateLocation();
       updateKeyDisplay();
       render();
+      syncNotesPane();
     });
   }
 
@@ -1076,6 +1177,7 @@ MAIN_TEMPLATE = r"""
         p.classList.toggle("active", p.id === "panel-" + name);
       });
       if (name === "setlists") restoreSetlistSelection();
+      syncNotesPane();
     });
   });
 
@@ -1094,6 +1196,7 @@ MAIN_TEMPLATE = r"""
     setlistIndexView.hidden = false;
     setlistDetailView.hidden = true;
     renderSetlistIndex();
+    syncNotesPane();
   }
 
   function showSetlistDetail(id) {
@@ -1104,7 +1207,211 @@ MAIN_TEMPLATE = r"""
     setlistNameInput.value = doc.name || "";
     setlistDateInput.value = doc.date || "";
     renderSetlistDetail();
+    syncNotesPane();
   }
+
+  // ---- Notes pane (setlist-wide + per-song) ----
+  const notesPane = document.getElementById("notes-pane");
+  const notesCompact = document.getElementById("notes-compact");
+  const compactSetlistNoteBtn = document.getElementById("compact-setlist-note");
+  const compactSongNoteBtn = document.getElementById("compact-song-note");
+  const setlistNoteCard = document.getElementById("setlist-note-card");
+  const songNoteCard = document.getElementById("song-note-card");
+  const setlistNoteView = document.getElementById("setlist-note-view");
+  const setlistNoteEdit = document.getElementById("setlist-note-edit");
+  const setlistNoteHint = document.getElementById("setlist-note-hint");
+  const songNoteView = document.getElementById("song-note-view");
+  const songNoteEdit = document.getElementById("song-note-edit");
+  const songNoteHint = document.getElementById("song-note-hint");
+  const toggleSetlistNoteBtn = document.getElementById("toggle-setlist-note-edit");
+  const toggleSongNoteBtn = document.getElementById("toggle-song-note-edit");
+  let editingSetlistNote = false;
+  let editingSongNote = false;
+  let editingSongNoteIdx = null;
+
+  function renderInlineMarkdown(src) {
+    let s = escapeHtml(String(src || ""));
+    s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/__(.+?)__/g, "<em>$1</em>");
+    s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+    s = s.replace(/\n/g, "<br>");
+    return s;
+  }
+
+  function fillNoteView(viewEl, text) {
+    viewEl.className = "note-card-body";
+    viewEl.innerHTML = renderInlineMarkdown(text);
+  }
+
+  function setlistsTabActive() {
+    const panel = document.getElementById("panel-setlists");
+    return panel && panel.classList.contains("active");
+  }
+
+  function findSetlistSongForNotes() {
+    if (!activeSetlistId || !sel) return null;
+    const doc = loadSetlist(activeSetlistId);
+    if (activeSetlistSongIndex != null) {
+      const song = doc.songs[activeSetlistSongIndex];
+      if (song && song.path === sel) return { doc, song, idx: activeSetlistSongIndex };
+    }
+    if (lastSetlistSongIndex != null) {
+      const song = doc.songs[lastSetlistSongIndex];
+      if (song && song.path === sel) return { doc, song, idx: lastSetlistSongIndex };
+    }
+    const idx = doc.songs.findIndex(s => s.path === sel);
+    if (idx >= 0) return { doc, song: doc.songs[idx], idx };
+    return null;
+  }
+
+  function syncNotesPane() {
+    const show = setlistsTabActive() && !!activeSetlistId;
+    notesPane.hidden = !show;
+    if (!show) {
+      editingSetlistNote = false;
+      editingSongNote = false;
+      editingSongNoteIdx = null;
+      notesCompact.hidden = true;
+      setlistNoteCard.hidden = true;
+      songNoteCard.hidden = true;
+      notesPane.classList.remove("is-compact-only");
+      return;
+    }
+
+    const doc = loadSetlist(activeSetlistId);
+    const setlistNoteText = doc.note || "";
+    const setlistHasNote = !!setlistNoteText.trim();
+    const showSetlistCard = editingSetlistNote || setlistHasNote;
+    const showSetlistCompact = !showSetlistCard;
+
+    if (showSetlistCard) {
+      setlistNoteCard.hidden = false;
+      if (!editingSetlistNote) {
+        setlistNoteEdit.hidden = true;
+        setlistNoteHint.hidden = true;
+        setlistNoteView.hidden = false;
+        toggleSetlistNoteBtn.textContent = "Edit";
+        fillNoteView(setlistNoteView, setlistNoteText);
+      }
+    } else {
+      setlistNoteCard.hidden = true;
+      editingSetlistNote = false;
+    }
+
+    const match = findSetlistSongForNotes();
+    let showSongCard = false;
+    let showSongCompact = false;
+    if (!match) {
+      songNoteCard.hidden = true;
+      editingSongNote = false;
+      editingSongNoteIdx = null;
+      compactSongNoteBtn.hidden = true;
+    } else {
+      const songNoteText = match.song.note || "";
+      const songHasNote = !!songNoteText.trim();
+      showSongCard = editingSongNote || songHasNote;
+      showSongCompact = !showSongCard;
+      if (showSongCard) {
+        songNoteCard.hidden = false;
+        if (editingSongNote && editingSongNoteIdx === match.idx) {
+          // keep editor open
+        } else {
+          editingSongNote = false;
+          editingSongNoteIdx = null;
+          songNoteEdit.hidden = true;
+          songNoteHint.hidden = true;
+          songNoteView.hidden = false;
+          toggleSongNoteBtn.textContent = "Edit";
+          fillNoteView(songNoteView, songNoteText);
+        }
+      } else {
+        songNoteCard.hidden = true;
+        editingSongNote = false;
+        editingSongNoteIdx = null;
+      }
+      compactSongNoteBtn.hidden = !showSongCompact;
+    }
+
+    const anyCompact = showSetlistCompact || showSongCompact;
+    compactSetlistNoteBtn.hidden = !showSetlistCompact;
+    notesCompact.hidden = !anyCompact;
+    notesPane.classList.toggle("is-compact-only", anyCompact && !showSetlistCard && !showSongCard);
+  }
+
+  function startEditSetlistNote() {
+    if (!activeSetlistId) return;
+    const doc = loadSetlist(activeSetlistId);
+    editingSetlistNote = true;
+    setlistNoteCard.hidden = false;
+    compactSetlistNoteBtn.hidden = true;
+    notesCompact.hidden = compactSongNoteBtn.hidden;
+    notesPane.classList.remove("is-compact-only");
+    setlistNoteView.hidden = true;
+    setlistNoteEdit.hidden = false;
+    setlistNoteHint.hidden = false;
+    setlistNoteEdit.value = doc.note || "";
+    toggleSetlistNoteBtn.textContent = "Done";
+    setlistNoteEdit.focus();
+  }
+
+  function finishEditSetlistNote() {
+    if (!activeSetlistId || !editingSetlistNote) return;
+    const doc = loadSetlist(activeSetlistId);
+    doc.note = setlistNoteEdit.value;
+    saveSetlist(activeSetlistId, doc);
+    editingSetlistNote = false;
+    syncNotesPane();
+  }
+
+  function startEditSongNote() {
+    const match = findSetlistSongForNotes();
+    if (!match) return;
+    editingSongNote = true;
+    editingSongNoteIdx = match.idx;
+    songNoteCard.hidden = false;
+    compactSongNoteBtn.hidden = true;
+    notesCompact.hidden = compactSetlistNoteBtn.hidden;
+    notesPane.classList.remove("is-compact-only");
+    songNoteView.hidden = true;
+    songNoteEdit.hidden = false;
+    songNoteHint.hidden = false;
+    songNoteEdit.value = match.song.note || "";
+    toggleSongNoteBtn.textContent = "Done";
+    songNoteEdit.focus();
+  }
+
+  function finishEditSongNote() {
+    if (!activeSetlistId || !editingSongNote || editingSongNoteIdx == null) return;
+    const doc = loadSetlist(activeSetlistId);
+    if (!doc.songs[editingSongNoteIdx]) {
+      editingSongNote = false;
+      editingSongNoteIdx = null;
+      syncNotesPane();
+      return;
+    }
+    doc.songs[editingSongNoteIdx].note = songNoteEdit.value;
+    saveSetlist(activeSetlistId, doc);
+    editingSongNote = false;
+    editingSongNoteIdx = null;
+    syncNotesPane();
+  }
+
+  toggleSetlistNoteBtn.addEventListener("click", () => {
+    if (editingSetlistNote) finishEditSetlistNote();
+    else startEditSetlistNote();
+  });
+  toggleSongNoteBtn.addEventListener("click", () => {
+    if (editingSongNote) finishEditSongNote();
+    else startEditSongNote();
+  });
+  compactSetlistNoteBtn.addEventListener("click", startEditSetlistNote);
+  compactSongNoteBtn.addEventListener("click", startEditSongNote);
+  setlistNoteEdit.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") finishEditSetlistNote();
+  });
+  songNoteEdit.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") finishEditSongNote();
+  });
 
   function sortedSetlistEntries() {
     return listSetlistIds().map(id => {
@@ -1258,13 +1565,13 @@ MAIN_TEMPLATE = r"""
     if (!path) return;
     fetchMeta(path).then(meta => {
       const doc = loadSetlist(activeSetlistId);
-      doc.songs.push({ path, key: meta.base_key || "C" });
+      doc.songs.push({ path, key: meta.base_key || "C", note: "" });
       saveSetlist(activeSetlistId, doc);
       select.value = "";
       renderSetlistDetail();
     }).catch(() => {
       const doc = loadSetlist(activeSetlistId);
-      doc.songs.push({ path, key: "C" });
+      doc.songs.push({ path, key: "C", note: "" });
       saveSetlist(activeSetlistId, doc);
       select.value = "";
       renderSetlistDetail();
@@ -1345,6 +1652,7 @@ MAIN_TEMPLATE = r"""
       if (!path) return;
       activeSetlistSongIndex = null;
       openSong(path, null, null);
+      syncNotesPane();
     });
   });
 
