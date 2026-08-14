@@ -228,6 +228,56 @@ def list_song_files(base_dir: Path) -> List[Path]:
     return results
 
 
+def extract_title_artist_lyrics(text: str) -> tuple[Optional[str], Optional[str], str]:
+    """Pull title/artist directives and chord-stripped lyrics for search."""
+    normalized, _ = prepare_chopro(text)
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    lyric_lines: List[str] = []
+    for raw in normalized.splitlines():
+        stripped = raw.strip()
+        m = DIRECTIVE_RE.match(stripped)
+        if m:
+            key, val = m.group(1).lower(), m.group(2).strip()
+            if key in ("title", "t") and not title:
+                title = val
+            elif key in ("artist", "a") and not artist:
+                artist = val
+            continue
+        if stripped.startswith("#"):
+            continue
+        lyric_lines.append(CHORD_RE.sub("", raw))
+    return title, artist, "\n".join(lyric_lines)
+
+
+def build_song_search_index(base_dir: Path, files: List[Path]) -> List[dict]:
+    """Build an in-memory search index (path, title, artist, lyrics haystack)."""
+    index: List[dict] = []
+    for p in files:
+        rel = str(p.relative_to(base_dir))
+        try:
+            raw = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            index.append({
+                "path": rel,
+                "name": p.name,
+                "title": None,
+                "artist": None,
+                "haystack": f"{rel}\n{p.name}".lower(),
+            })
+            continue
+        title, artist, lyrics = extract_title_artist_lyrics(raw)
+        haystack = "\n".join([rel, p.name, title or "", artist or "", lyrics]).lower()
+        index.append({
+            "path": rel,
+            "name": p.name,
+            "title": title,
+            "artist": artist,
+            "haystack": haystack,
+        })
+    return index
+
+
 @app.route("/")
 def index():
     # Resolve base directory from config
@@ -338,6 +388,32 @@ def song_meta():
         abort(500, description="Could not read song file")
     _, base_key = prepare_chopro(raw_text)
     return jsonify({"path": rel, "base_key": base_key, "name": song_path.name})
+
+
+@app.route("/search")
+def search_songs():
+    """Filter songs by substring match against title, artist, lyrics, or path."""
+    q = (request.args.get("q") or "").strip().lower()
+    try:
+        limit = int(request.args.get("limit", 80))
+    except ValueError:
+        limit = 80
+    limit = max(1, min(limit, 200))
+
+    index: List[dict] = app.config.get("SONG_SEARCH_INDEX") or []
+    results = []
+    for entry in index:
+        if q and q not in entry.get("haystack", ""):
+            continue
+        results.append({
+            "path": entry["path"],
+            "name": entry["name"],
+            "title": entry.get("title"),
+            "artist": entry.get("artist"),
+        })
+        if len(results) >= limit:
+            break
+    return jsonify({"q": q, "results": results})
 
 
 @app.route("/events")
@@ -475,10 +551,17 @@ MAIN_TEMPLATE = r"""
     .panel.active { display: flex; }
 
     .create-row { display: flex; gap: 6px; }
-    .create-row input, .add-row select, .setlist-item select {
+    .create-row input, .add-row select, .setlist-item select, .add-song-picker input {
       flex: 1; min-width: 0; background: #0b1220; color: var(--fg);
       border: 1px solid #203047; border-radius: 8px; padding: 6px 8px; font-size: 13px;
     }
+    .add-song-picker { display: flex; flex-direction: column; gap: 6px; }
+    .add-song-picker select {
+      width: 100%; min-height: 9.5em; background: #0b1220; color: var(--fg);
+      border: 1px solid #203047; border-radius: 8px; padding: 4px; font-size: 13px;
+    }
+    .add-song-picker .add-row { align-items: stretch; }
+    .add-song-picker .add-row button { align-self: flex-end; }
     .setlist-row, .setlist-item {
       display: flex; align-items: center; gap: 6px; padding: 8px 10px;
       border-radius: 10px; background: #0b1220;
@@ -575,14 +658,14 @@ MAIN_TEMPLATE = r"""
           </label>
         </div>
         <div id="setlist-songs" class="setlist-songs"></div>
-        <div class="add-row">
-          <select id="add-song-select">
-            <option value="">Add a song…</option>
-            {% for rel, name in files %}
-              <option value="{{ rel }}">{{ name }}</option>
-            {% endfor %}
-          </select>
-          <button type="button" id="add-song-btn" title="Add song">Add</button>
+        <div class="add-song-picker">
+          <input id="add-song-filter" type="search" placeholder="Filter by title, artist, lyrics…" autocomplete="off" />
+          <div class="add-row">
+            <select id="add-song-select" size="8">
+              <option value="">Add a song…</option>
+            </select>
+            <button type="button" id="add-song-btn" title="Add song">Add</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1188,6 +1271,66 @@ MAIN_TEMPLATE = r"""
     });
   });
 
+  function songOptionLabel(r) {
+    if (r.title && r.artist) return `${r.title} — ${r.artist}`;
+    if (r.title) return r.title;
+    return r.name;
+  }
+
+  let addSongSearchId = 0;
+  let addSongFilterTimer = null;
+  function refreshAddSongOptions(q) {
+    const searchId = ++addSongSearchId;
+    fetch(`/search?q=${encodeURIComponent(q || "")}`)
+      .then(r => { if (!r.ok) throw new Error("search " + r.status); return r.json(); })
+      .then(data => {
+        if (searchId !== addSongSearchId) return;
+        const select = document.getElementById("add-song-select");
+        const prev = select.value;
+        const results = data.results || [];
+        if (!results.length) {
+          select.innerHTML = q
+            ? '<option value="">No matches</option>'
+            : '<option value="">Add a song…</option>';
+          return;
+        }
+        select.innerHTML = '<option value="">Add a song…</option>' + results.map(r =>
+          `<option value="${escapeAttr(r.path)}">${escapeHtml(songOptionLabel(r))}</option>`
+        ).join("");
+        if (prev && Array.from(select.options).some(o => o.value === prev)) {
+          select.value = prev;
+        } else if (q && results.length === 1) {
+          select.value = results[0].path;
+        }
+      })
+      .catch(() => {});
+  }
+
+  const addSongFilter = document.getElementById("add-song-filter");
+  addSongFilter.addEventListener("input", () => {
+    clearTimeout(addSongFilterTimer);
+    addSongFilterTimer = setTimeout(() => {
+      refreshAddSongOptions(addSongFilter.value.trim());
+    }, 180);
+  });
+  addSongFilter.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const select = document.getElementById("add-song-select");
+      if (!select.value) {
+        const first = Array.from(select.options).find(o => o.value);
+        if (first) select.value = first.value;
+      }
+      if (select.value) document.getElementById("add-song-btn").click();
+    }
+  });
+  document.getElementById("add-song-select").addEventListener("dblclick", () => {
+    if (document.getElementById("add-song-select").value) {
+      document.getElementById("add-song-btn").click();
+    }
+  });
+  refreshAddSongOptions("");
+
   if (btnDown) {
     btnDown.addEventListener("click", () => bumpTranspose(-1));
   }
@@ -1239,7 +1382,9 @@ def main():
     app.config["STATIC_DIR"] = base_dir  # not used, but kept for completeness
     # Cache the list of song files once at startup so navigating between songs
     # or transposing does not require rescanning large directory trees.
-    app.config["SONG_FILES"] = list_song_files(base_dir)
+    song_files = list_song_files(base_dir)
+    app.config["SONG_FILES"] = song_files
+    app.config["SONG_SEARCH_INDEX"] = build_song_search_index(base_dir, song_files)
 
     # Start watchdog observer
     handler = ReloadHandler(base_dir)
