@@ -13,6 +13,7 @@ and automatically updates the rendering when the underlying file changes.
   - Inline [Chord] notation with clean, readable styling
   - Optional transposition via query string (?transpose=+2 or ?transpose=-3)
   - Live reload in the browser when the file changes (via Server‑Sent Events + watchdog)
+  - Client-side setlists (YAML in localStorage): name, date, and songs[{path, key}]; no server writes
 
 - Quick start
   1) Install deps:  pip install flask watchdog
@@ -321,6 +322,24 @@ def render_song():
     return fragment
 
 
+@app.route("/meta")
+def song_meta():
+    """Return base key (and related metadata) for a song — read-only, no writes."""
+    base_dir = app.config["BASE_DIR"]
+    rel = request.args.get("path")
+    if not rel:
+        abort(400, description="Missing 'path' query param")
+    song_path = safe_under(base_dir, base_dir / rel)
+    if not song_path.exists():
+        abort(404)
+    try:
+        raw_text = song_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        abort(500, description="Could not read song file")
+    _, base_key = prepare_chopro(raw_text)
+    return jsonify({"path": rel, "base_key": base_key, "name": song_path.name})
+
+
 @app.route("/events")
 def sse_events():
     base_dir = app.config["BASE_DIR"]
@@ -411,8 +430,8 @@ MAIN_TEMPLATE = r"""
       margin: 0; background: var(--bg); color: var(--fg);
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
     }
-    .container { display: grid; grid-template-columns: 280px 1fr; height: 100vh; }
-    aside { background: var(--panel); padding: 12px; border-right: 1px solid #1f2937; overflow: auto; }
+    .container { display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
+    aside { background: var(--panel); padding: 12px; border-right: 1px solid #1f2937; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
     main { height: 100vh; overflow: auto; padding: 24px; }
     h1.title { margin: 0 0 6px 0; font-size: 28px; letter-spacing: .5px; }
     .subtitle { color: var(--muted); margin-bottom: 8px; }
@@ -430,7 +449,7 @@ MAIN_TEMPLATE = r"""
     .file { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; cursor: pointer; text-decoration: none; color: var(--fg); }
     .file:hover { background: #0b1220; }
     .file.active { background: #0e1a2f; outline: 1px solid #1f334f; }
-    .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
     .brand { font-weight: 800; letter-spacing: .6px; }
     .controls { display: flex; gap: 10px; align-items: center; }
     .key-display { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); }
@@ -438,8 +457,52 @@ MAIN_TEMPLATE = r"""
     .transpose-buttons { display: flex; gap: 4px; }
     button { background: #0b1220; color: var(--fg); border: 1px solid #203047; border-radius: 10px; padding: 6px 10px; cursor: pointer; }
     button:hover { background: #0e1a2f; }
+    button.danger { border-color: #7f1d1d; color: #fca5a5; }
+    button.danger:hover { background: #450a0a; }
+    button.small { padding: 3px 7px; font-size: 12px; border-radius: 8px; }
     .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
     .empty { color: var(--muted); padding: 10px; }
+
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid #1f2937; padding-bottom: 8px; }
+    .tab {
+      flex: 1; text-align: center; padding: 8px 6px; border-radius: 10px 10px 0 0;
+      background: transparent; border: 1px solid transparent; color: var(--muted);
+      cursor: pointer; font-weight: 600; font-size: 13px; letter-spacing: .04em; text-transform: uppercase;
+    }
+    .tab:hover { color: var(--fg); background: #0b1220; }
+    .tab.active { color: var(--fg); background: #0e1a2f; border-color: #1f334f; border-bottom-color: transparent; }
+    .panel { display: none; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+    .panel.active { display: flex; }
+
+    .create-row { display: flex; gap: 6px; }
+    .create-row input, .add-row select, .setlist-item select {
+      flex: 1; min-width: 0; background: #0b1220; color: var(--fg);
+      border: 1px solid #203047; border-radius: 8px; padding: 6px 8px; font-size: 13px;
+    }
+    .setlist-row, .setlist-item {
+      display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+      border-radius: 10px; background: #0b1220;
+    }
+    .setlist-row { cursor: pointer; }
+    .setlist-row:hover { background: #0e1a2f; outline: 1px solid #1f334f; }
+    .setlist-row .name, .setlist-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .setlist-item { flex-wrap: wrap; }
+    .setlist-item.active { outline: 1px solid #1f334f; background: #0e1a2f; }
+    .setlist-item .name { cursor: pointer; }
+    .setlist-item .name:hover { color: var(--accent); }
+    .setlist-item .song-key { flex: 0 0 auto; font-size: 13px; font-weight: 600; color: var(--accent); min-width: 2em; text-align: center; }
+    .setlist-toolbar { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+    .setlist-meta { display: flex; flex-direction: column; gap: 6px; }
+    .setlist-meta label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    .setlist-meta input {
+      background: #0b1220; color: var(--fg); border: 1px solid #203047;
+      border-radius: 8px; padding: 6px 8px; font-size: 13px; text-transform: none; letter-spacing: normal;
+    }
+    .setlist-row .meta-line { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+    .setlist-row .date { font-size: 12px; color: var(--muted); }
+    .add-row { display: flex; gap: 6px; align-items: center; }
+    .item-actions { display: flex; gap: 3px; }
+    .songs-list, .setlists-list, .setlist-songs { display: flex; flex-direction: column; gap: 4px; }
   </style>
 </head>
 <body>
@@ -448,10 +511,10 @@ MAIN_TEMPLATE = r"""
     <div class="header">
       <div class="brand">🎸 Chord Viewer</div>
       <div class="controls">
-        <div class="key-display">
+        <div class="key-display" id="key-display">
           {% if base_key %}
             <span>Key</span>
-            <span class="key-main">
+            <span class="key-main" id="key-main">
               {% if transpose and current_key and current_key != base_key %}
                 {{ base_key }} → {{ current_key or base_key }}
               {% else %}
@@ -459,7 +522,7 @@ MAIN_TEMPLATE = r"""
               {% endif %}
             </span>
           {% else %}
-            <span class="key-main">Transpose</span>
+            <span class="key-main" id="key-main">Transpose</span>
           {% endif %}
         </div>
         <div class="transpose-buttons">
@@ -468,14 +531,61 @@ MAIN_TEMPLATE = r"""
         </div>
       </div>
     </div>
-    {% if files %}
-      {% for rel, name in files %}
-        <a class="file {% if selected == rel %}active{% endif %}" data-path="{{ rel }}" href="{{ url_for('index') }}?path={{ rel }}&transpose={{ transpose }}">{{ name }}</a>
-      {% endfor %}
-      <div class="hint">Watching current file for changes…</div>
-    {% else %}
-      <div class="empty">No song files found in this directory. Add .cho/.chordpro/.pro/.onsong/.txt files.</div>
-    {% endif %}
+
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="songs" role="tab" aria-selected="true">Songs</button>
+      <button type="button" class="tab" data-tab="setlists" role="tab" aria-selected="false">Setlists</button>
+    </div>
+
+    <div id="panel-songs" class="panel active" role="tabpanel">
+      {% if files %}
+        <div class="songs-list">
+          {% for rel, name in files %}
+            <a class="file {% if selected == rel %}active{% endif %}" data-path="{{ rel }}" href="{{ url_for('index') }}?path={{ rel }}&transpose={{ transpose }}">{{ name }}</a>
+          {% endfor %}
+        </div>
+        <div class="hint">Watching current file for changes…</div>
+      {% else %}
+        <div class="empty">No song files found in this directory. Add .cho/.chordpro/.pro/.onsong/.txt files.</div>
+      {% endif %}
+    </div>
+
+    <div id="panel-setlists" class="panel" role="tabpanel">
+      <div id="setlist-index-view">
+        <div class="create-row">
+          <input id="new-setlist-name" type="text" placeholder="New setlist name" maxlength="80" />
+          <button type="button" id="create-setlist" title="Create setlist">+</button>
+        </div>
+        <div id="setlists-list" class="setlists-list"></div>
+        <div class="hint">Setlists are stored in this browser only (YAML per setlist).</div>
+      </div>
+      <div id="setlist-detail-view" hidden>
+        <div class="setlist-toolbar">
+          <button type="button" class="small" id="back-to-setlists" title="Back">←</button>
+          <button type="button" class="small danger" id="delete-setlist" title="Delete setlist">✕</button>
+        </div>
+        <div class="setlist-meta">
+          <label>
+            <span>Name</span>
+            <input id="setlist-name-input" type="text" maxlength="80" />
+          </label>
+          <label>
+            <span>Date</span>
+            <input id="setlist-date-input" type="date" />
+          </label>
+        </div>
+        <div id="setlist-songs" class="setlist-songs"></div>
+        <div class="add-row">
+          <select id="add-song-select">
+            <option value="">Add a song…</option>
+            {% for rel, name in files %}
+              <option value="{{ rel }}">{{ name }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" id="add-song-btn" title="Add song">Add</button>
+        </div>
+      </div>
+    </div>
   </aside>
   <main>
     <div id="song"></div>
@@ -484,73 +594,626 @@ MAIN_TEMPLATE = r"""
 
 <script>
 (function(){
+  const NOTE_INDEX = {
+    "C":0,"B#":0,"C#":1,"Db":1,"D":2,"D#":3,"Eb":3,"E":4,"Fb":4,
+    "F":5,"E#":5,"F#":6,"Gb":6,"G":7,"G#":8,"Ab":8,"A":9,"A#":10,"Bb":10,"B":11,"Cb":11
+  };
+  const NOTE_SHARP = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const INDEX_KEY = "offsong:setlists:index";
+  const FILE_PREFIX = "offsong:setlist:file:";
+
   const urlParams = new URLSearchParams(window.location.search);
-  let sel = urlParams.get('path');
-  let transpose = parseInt(urlParams.get('transpose') || '0', 10) || 0;
-  const btnDown = document.getElementById('down');
-  const btnUp = document.getElementById('up');
-  const songEl = document.getElementById('song');
-  const fileLinks = document.querySelectorAll('.file');
+  let sel = urlParams.get("path");
+  let transpose = parseInt(urlParams.get("transpose") || "0", 10) || 0;
+  let currentBaseKey = {{ (base_key or "")|tojson }};
+  let activeSetlistId = null; // stable id of setlist being edited/viewed
+  let activeSetlistSongIndex = null; // index within setlist when opened from there
+  let lastSetlistSongIndex = null; // remembered across Songs-tab browsing
+  let songLoadId = 0; // ignores stale openSong/meta callbacks
+  let renderId = 0; // ignores stale /render responses
+
+  const btnDown = document.getElementById("down");
+  const btnUp = document.getElementById("up");
+  const songEl = document.getElementById("song");
+  const keyMain = document.getElementById("key-main");
+  const fileLinks = document.querySelectorAll("#panel-songs .file");
   let es = null;
 
+  // ---- YAML codec for setlist files: name / date / songs[{path,key}] ----
+  function escapeYamlString(s) {
+    if (s === "" || /[:#\n\r\t{}[\],&*!|>'"%@`]/.test(s) || /^\s|\s$/.test(s)) {
+      return JSON.stringify(s);
+    }
+    return s;
+  }
+
+  function parseYamlScalar(raw) {
+    const s = (raw || "").trim();
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+      try { return JSON.parse(s.replace(/^'/, '"').replace(/'$/, '"')); } catch (_) { return s.slice(1, -1); }
+    }
+    return s;
+  }
+
+  function todayISO() {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  function emptySetlist(name, date) {
+    return { name: name || "Untitled", date: date || todayISO(), songs: [] };
+  }
+
+  function setlistToYaml(doc) {
+    const songs = Array.isArray(doc.songs) ? doc.songs : [];
+    let out = `name: ${escapeYamlString(doc.name || "")}\n`;
+    out += `date: ${escapeYamlString(doc.date || "")}\n`;
+    out += "songs:\n";
+    if (!songs.length) {
+      out += "  []\n";
+      return out;
+    }
+    for (const song of songs) {
+      out += `  - path: ${escapeYamlString(song.path || "")}\n`;
+      out += `    key: ${escapeYamlString(song.key || "")}\n`;
+    }
+    return out;
+  }
+
+  function yamlToSetlist(text, fallbackName) {
+    const doc = emptySetlist(fallbackName || "Untitled", "");
+    const songs = [];
+    let current = null;
+    let inSongs = false;
+    const lines = String(text || "").split(/\r?\n/);
+
+    // Legacy format: bare list of "- path:" at column 0
+    const legacy = /^\s*-\s+path\s*:/.test(text || "") && !/^\s*name\s*:/m.test(text || "");
+    if (legacy) {
+      for (const line of lines) {
+        if (!line.trim() || line.trim().startsWith("#")) continue;
+        const item = line.match(/^\s*-\s+path\s*:\s*(.*)$/);
+        if (item) {
+          if (current) songs.push(current);
+          current = { path: parseYamlScalar(item[1]), key: "" };
+          continue;
+        }
+        const keyLine = line.match(/^\s+key\s*:\s*(.*)$/);
+        if (keyLine && current) current.key = parseYamlScalar(keyLine[1]);
+      }
+      if (current) songs.push(current);
+      doc.songs = songs.filter(s => s.path);
+      doc.date = doc.date || todayISO();
+      return doc;
+    }
+
+    for (const line of lines) {
+      if (!line.trim() || line.trim().startsWith("#")) continue;
+      const nameLine = line.match(/^\s*name\s*:\s*(.*)$/);
+      if (nameLine && !inSongs) {
+        doc.name = parseYamlScalar(nameLine[1]);
+        continue;
+      }
+      const dateLine = line.match(/^\s*date\s*:\s*(.*)$/);
+      if (dateLine && !inSongs) {
+        doc.date = parseYamlScalar(dateLine[1]);
+        continue;
+      }
+      if (/^\s*songs\s*:\s*$/.test(line)) {
+        inSongs = true;
+        continue;
+      }
+      if (/^\s*songs\s*:\s*\[\s*\]\s*$/.test(line)) {
+        inSongs = true;
+        continue;
+      }
+      if (!inSongs) continue;
+      if (/^\s*\[\s*\]\s*$/.test(line)) continue;
+
+      const item = line.match(/^\s*-\s+path\s*:\s*(.*)$/);
+      if (item) {
+        if (current) songs.push(current);
+        current = { path: parseYamlScalar(item[1]), key: "" };
+        continue;
+      }
+      const keyLine = line.match(/^\s+key\s*:\s*(.*)$/);
+      if (keyLine && current) {
+        current.key = parseYamlScalar(keyLine[1]);
+      }
+    }
+    if (current) songs.push(current);
+    doc.songs = songs.filter(s => s.path);
+    if (!doc.date) doc.date = todayISO();
+    return doc;
+  }
+
+  // ---- Client-side setlist store: one YAML file per setlist id ----
+  function listSetlistIds() {
+    try {
+      const raw = localStorage.getItem(INDEX_KEY);
+      const ids = raw ? JSON.parse(raw) : [];
+      return Array.isArray(ids) ? ids : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function saveSetlistIds(ids) {
+    localStorage.setItem(INDEX_KEY, JSON.stringify(ids));
+  }
+
+  function setlistFileKey(id) {
+    return FILE_PREFIX + id;
+  }
+
+  function newSetlistId() {
+    return "sl_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+  }
+
+  function loadSetlist(id) {
+    const yaml = localStorage.getItem(setlistFileKey(id));
+    if (yaml == null) return emptySetlist("Untitled", todayISO());
+    return yamlToSetlist(yaml, id);
+  }
+
+  function saveSetlist(id, doc) {
+    const normalized = {
+      name: (doc.name || "Untitled").trim() || "Untitled",
+      date: doc.date || todayISO(),
+      songs: Array.isArray(doc.songs) ? doc.songs : []
+    };
+    localStorage.setItem(setlistFileKey(id), setlistToYaml(normalized));
+    const ids = listSetlistIds();
+    if (!ids.includes(id)) {
+      ids.push(id);
+      saveSetlistIds(ids);
+    }
+    return normalized;
+  }
+
+  function deleteSetlist(id) {
+    localStorage.removeItem(setlistFileKey(id));
+    saveSetlistIds(listSetlistIds().filter(x => x !== id));
+  }
+
+  function migrateLegacyNameKeyedSetlists() {
+    // Older builds indexed by name and stored a bare song list YAML under that name.
+    const ids = listSetlistIds();
+    let changed = false;
+    const nextIds = [];
+    for (const key of ids) {
+      if (String(key).startsWith("sl_")) {
+        nextIds.push(key);
+        continue;
+      }
+      const yaml = localStorage.getItem(setlistFileKey(key));
+      if (yaml == null) { changed = true; continue; }
+      const doc = yamlToSetlist(yaml, key);
+      if (!doc.name || doc.name === key) doc.name = key;
+      const id = newSetlistId();
+      localStorage.setItem(setlistFileKey(id), setlistToYaml(doc));
+      localStorage.removeItem(setlistFileKey(key));
+      nextIds.push(id);
+      changed = true;
+    }
+    if (changed) saveSetlistIds(nextIds);
+  }
+
+  function basename(path) {
+    const parts = path.split("/");
+    return parts[parts.length - 1] || path;
+  }
+
+  function noteIndex(note) {
+    if (!note) return null;
+    const m = String(note).trim().match(/^([A-G](?:#|b)?)/);
+    if (!m) return null;
+    const idx = NOTE_INDEX[m[1]];
+    return (idx === undefined) ? null : idx;
+  }
+
+  function transposeAmount(fromKey, toKey) {
+    const a = noteIndex(fromKey);
+    const b = noteIndex(toKey);
+    if (a === null || b === null) return 0;
+    let d = b - a;
+    if (d > 6) d -= 12;
+    if (d < -6) d += 12;
+    return d;
+  }
+
+  function applyTransposeToKey(baseKey, semitones) {
+    const a = noteIndex(baseKey);
+    if (a === null) return null;
+    return NOTE_SHARP[((a + semitones) % 12 + 12) % 12];
+  }
+
+  function updateKeyDisplay() {
+    if (!keyMain) return;
+    if (currentBaseKey) {
+      const cur = applyTransposeToKey(currentBaseKey, transpose) || currentBaseKey;
+      keyMain.textContent = (transpose && cur !== currentBaseKey)
+        ? `${currentBaseKey} → ${cur}`
+        : currentBaseKey;
+    } else {
+      keyMain.textContent = transpose ? `Transpose ${transpose > 0 ? "+" : ""}${transpose}` : "Transpose";
+    }
+  }
+
+  function fetchMeta(path) {
+    return fetch(`/meta?path=${encodeURIComponent(path)}`)
+      .then(r => { if (!r.ok) throw new Error("meta " + r.status); return r.json(); });
+  }
+
   function render(){
-    if(!sel){ songEl.innerHTML = '<div class="empty">Pick a file from the left.</div>'; return; }
-    fetch(`/render?path=${encodeURIComponent(sel)}&transpose=${transpose}`)
+    if (!sel) {
+      songEl.innerHTML = '<div class="empty">Pick a file from the left.</div>';
+      return;
+    }
+    const id = ++renderId;
+    const t = Number(transpose) || 0;
+    fetch(`/render?path=${encodeURIComponent(sel)}&transpose=${t}`)
       .then(r => r.text())
-      .then(html => { songEl.innerHTML = html; })
-      .catch(err => { songEl.innerHTML = `<div class="empty">Error: ${err}</div>`; });
+      .then(html => {
+        if (id !== renderId) return;
+        songEl.innerHTML = html;
+        updateKeyDisplay();
+      })
+      .catch(err => {
+        if (id !== renderId) return;
+        songEl.innerHTML = `<div class="empty">Error: ${err}</div>`;
+      });
   }
 
   function startSSE(){
-    if(!sel) return;
-    if (es) {
-      es.close();
-    }
+    if (!sel) return;
+    if (es) es.close();
     es = new EventSource(`/events?path=${encodeURIComponent(sel)}`);
     es.onmessage = (ev) => {
-      if(ev.data === 'reload') { render(); }
+      if (ev.data === "reload") { render(); }
     };
-    es.addEventListener('ping', () => {/* keep-alive */});
-    es.onerror = () => { /* browser will reconnect automatically */ };
+    es.addEventListener("ping", () => {});
+    es.onerror = () => {};
   }
 
   function updateLocation() {
-    const t = String(transpose || 0);
     const url = new URL(window.location);
-    url.searchParams.set('transpose', t);
-    if(sel) url.searchParams.set('path', sel);
-    history.replaceState(null, '', url.toString());
+    url.searchParams.set("transpose", String(Number(transpose) || 0));
+    if (sel) url.searchParams.set("path", sel);
+    history.replaceState(null, "", url.toString());
   }
 
-  if (btnDown) {
-    btnDown.addEventListener('click', () => {
-      transpose = (transpose || 0) - 1;
+  function setActiveSongLink(path) {
+    fileLinks.forEach(l => l.classList.toggle("active", l.getAttribute("data-path") === path));
+  }
+
+  function openSong(path, desiredKey, setlistSongIndex) {
+    sel = path;
+    activeSetlistSongIndex = (setlistSongIndex == null) ? null : setlistSongIndex;
+    if (setlistSongIndex != null) lastSetlistSongIndex = setlistSongIndex;
+    setActiveSongLink(path);
+    startSSE();
+    const loadId = ++songLoadId;
+    fetchMeta(path).then(meta => {
+      if (path !== sel) return;
+      currentBaseKey = meta.base_key || null;
+      // If the user already transposed (or opened another song), keep their transpose
+      if (loadId !== songLoadId) {
+        updateKeyDisplay();
+        return;
+      }
+      if (desiredKey && currentBaseKey) {
+        transpose = transposeAmount(currentBaseKey, desiredKey);
+      } else {
+        // Songs tab, or setlist song with no mappable base key
+        transpose = 0;
+      }
       updateLocation();
+      updateKeyDisplay();
+      render();
+      renderSetlistDetail();
+    }).catch(() => {
+      if (path !== sel || loadId !== songLoadId) return;
+      currentBaseKey = null;
+      transpose = 0;
+      updateLocation();
+      updateKeyDisplay();
       render();
     });
   }
-  if (btnUp) {
-    btnUp.addEventListener('click', () => {
-      transpose = (transpose || 0) + 1;
-      updateLocation();
-      render();
-    });
+
+  function setlistSongIndexForPersist() {
+    if (activeSetlistSongIndex != null) return activeSetlistSongIndex;
+    if (lastSetlistSongIndex == null || !activeSetlistId || !sel) return null;
+    const doc = loadSetlist(activeSetlistId);
+    const song = doc.songs[lastSetlistSongIndex];
+    if (song && song.path === sel) return lastSetlistSongIndex;
+    return null;
   }
 
-  // Intercept song link clicks to avoid full page reloads
-  fileLinks.forEach(link => {
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      const path = link.getAttribute('data-path');
-      if (!path) return;
-      sel = path;
-      fileLinks.forEach(l => l.classList.toggle('active', l === link));
-      updateLocation();
-      render();
-      startSSE();
+  function persistActiveSetlistKeyFromTranspose() {
+    const idx = setlistSongIndexForPersist();
+    if (!activeSetlistId || idx == null || !sel) return;
+
+    const apply = (baseKey) => {
+      if (!baseKey) return;
+      const newKey = applyTransposeToKey(baseKey, Number(transpose) || 0);
+      if (!newKey) return;
+      const doc = loadSetlist(activeSetlistId);
+      if (!doc.songs[idx] || doc.songs[idx].path !== sel) return;
+      doc.songs[idx].key = newKey;
+      saveSetlist(activeSetlistId, doc);
+      activeSetlistSongIndex = idx;
+      lastSetlistSongIndex = idx;
+      renderSetlistDetail();
+    };
+
+    if (currentBaseKey) {
+      apply(currentBaseKey);
+      return;
+    }
+    fetchMeta(sel).then(meta => {
+      currentBaseKey = meta.base_key || null;
+      apply(currentBaseKey);
+      updateKeyDisplay();
+    }).catch(() => {});
+  }
+
+  function bumpTranspose(delta) {
+    // Invalidate in-flight openSong so it cannot reset transpose after +/- 
+    songLoadId++;
+    transpose = (Number(transpose) || 0) + delta;
+    updateLocation();
+    updateKeyDisplay();
+    render();
+    persistActiveSetlistKeyFromTranspose();
+  }
+
+  // ---- Tabs ----
+  function restoreSetlistSelection() {
+    if (!activeSetlistId || lastSetlistSongIndex == null) return;
+    const doc = loadSetlist(activeSetlistId);
+    const song = doc.songs[lastSetlistSongIndex];
+    if (!song) return;
+    openSong(song.path, song.key, lastSetlistSongIndex);
+  }
+
+  document.querySelectorAll(".tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      const name = tab.getAttribute("data-tab");
+      document.querySelectorAll(".tab").forEach(t => {
+        const on = t === tab;
+        t.classList.toggle("active", on);
+        t.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      document.querySelectorAll(".panel").forEach(p => {
+        p.classList.toggle("active", p.id === "panel-" + name);
+      });
+      if (name === "setlists") restoreSetlistSelection();
     });
   });
 
+  // ---- Setlist UI ----
+  const setlistsListEl = document.getElementById("setlists-list");
+  const setlistIndexView = document.getElementById("setlist-index-view");
+  const setlistDetailView = document.getElementById("setlist-detail-view");
+  const setlistNameInput = document.getElementById("setlist-name-input");
+  const setlistDateInput = document.getElementById("setlist-date-input");
+  const setlistSongsEl = document.getElementById("setlist-songs");
+
+  function showSetlistIndex() {
+    activeSetlistId = null;
+    activeSetlistSongIndex = null;
+    lastSetlistSongIndex = null;
+    setlistIndexView.hidden = false;
+    setlistDetailView.hidden = true;
+    renderSetlistIndex();
+  }
+
+  function showSetlistDetail(id) {
+    activeSetlistId = id;
+    setlistIndexView.hidden = true;
+    setlistDetailView.hidden = false;
+    const doc = loadSetlist(id);
+    setlistNameInput.value = doc.name || "";
+    setlistDateInput.value = doc.date || "";
+    renderSetlistDetail();
+  }
+
+  function sortedSetlistEntries() {
+    return listSetlistIds().map(id => {
+      const doc = loadSetlist(id);
+      return { id, doc };
+    }).sort((a, b) => {
+      const da = a.doc.date || "";
+      const db = b.doc.date || "";
+      if (da !== db) return db.localeCompare(da);
+      return (a.doc.name || "").localeCompare(b.doc.name || "");
+    });
+  }
+
+  function renderSetlistIndex() {
+    const entries = sortedSetlistEntries();
+    if (!entries.length) {
+      setlistsListEl.innerHTML = '<div class="empty">No setlists yet. Create one above.</div>';
+      return;
+    }
+    setlistsListEl.innerHTML = entries.map(({ id, doc }) => {
+      const count = (doc.songs || []).length;
+      const dateLabel = doc.date || "No date";
+      return `<div class="setlist-row" data-id="${escapeAttr(id)}">
+        <div class="meta-line">
+          <span class="name">${escapeHtml(doc.name || "Untitled")}</span>
+          <span class="date">${escapeHtml(dateLabel)}</span>
+        </div>
+        <span class="hint">${count}</span>
+      </div>`;
+    }).join("");
+    setlistsListEl.querySelectorAll(".setlist-row").forEach(row => {
+      row.addEventListener("click", () => showSetlistDetail(row.getAttribute("data-id")));
+    });
+  }
+
+  function updateActiveSetlistMetaFromInputs() {
+    if (!activeSetlistId) return;
+    const doc = loadSetlist(activeSetlistId);
+    doc.name = (setlistNameInput.value || "").trim() || "Untitled";
+    doc.date = setlistDateInput.value || "";
+    saveSetlist(activeSetlistId, doc);
+  }
+
+  function renderSetlistDetail() {
+    if (!activeSetlistId) return;
+    const doc = loadSetlist(activeSetlistId);
+    const songs = doc.songs || [];
+    if (!songs.length) {
+      setlistSongsEl.innerHTML = '<div class="empty">No songs in this setlist. Add one below.</div>';
+      return;
+    }
+    setlistSongsEl.innerHTML = songs.map((song, i) => {
+      const active = (sel === song.path && activeSetlistSongIndex === i) ? " active" : "";
+      const keyLabel = song.key || "—";
+      return `<div class="setlist-item${active}" data-index="${i}">
+        <span class="name" title="${escapeAttr(song.path)}">${escapeHtml(basename(song.path))}</span>
+        <span class="song-key" title="Key for this set">${escapeHtml(keyLabel)}</span>
+        <div class="item-actions">
+          <button type="button" class="small move-up" title="Move up" ${i === 0 ? "disabled" : ""}>↑</button>
+          <button type="button" class="small move-down" title="Move down" ${i === songs.length - 1 ? "disabled" : ""}>↓</button>
+          <button type="button" class="small danger remove-song" title="Remove">✕</button>
+        </div>
+      </div>`;
+    }).join("");
+
+    setlistSongsEl.querySelectorAll(".setlist-item").forEach(item => {
+      const index = parseInt(item.getAttribute("data-index"), 10);
+      const song = songs[index];
+      item.querySelector(".name").addEventListener("click", () => {
+        openSong(song.path, song.key, index);
+      });
+      item.querySelector(".song-key").addEventListener("click", () => {
+        openSong(song.path, song.key, index);
+      });
+      item.querySelector(".remove-song").addEventListener("click", () => {
+        const next = loadSetlist(activeSetlistId);
+        next.songs.splice(index, 1);
+        saveSetlist(activeSetlistId, next);
+        if (activeSetlistSongIndex === index) activeSetlistSongIndex = null;
+        else if (activeSetlistSongIndex != null && activeSetlistSongIndex > index) activeSetlistSongIndex -= 1;
+        if (lastSetlistSongIndex === index) lastSetlistSongIndex = null;
+        else if (lastSetlistSongIndex != null && lastSetlistSongIndex > index) lastSetlistSongIndex -= 1;
+        renderSetlistDetail();
+      });
+      item.querySelector(".move-up").addEventListener("click", () => {
+        if (index <= 0) return;
+        const next = loadSetlist(activeSetlistId);
+        [next.songs[index - 1], next.songs[index]] = [next.songs[index], next.songs[index - 1]];
+        saveSetlist(activeSetlistId, next);
+        if (activeSetlistSongIndex === index) activeSetlistSongIndex = index - 1;
+        else if (activeSetlistSongIndex === index - 1) activeSetlistSongIndex = index;
+        if (lastSetlistSongIndex === index) lastSetlistSongIndex = index - 1;
+        else if (lastSetlistSongIndex === index - 1) lastSetlistSongIndex = index;
+        renderSetlistDetail();
+      });
+      item.querySelector(".move-down").addEventListener("click", () => {
+        const next = loadSetlist(activeSetlistId);
+        if (index >= next.songs.length - 1) return;
+        [next.songs[index + 1], next.songs[index]] = [next.songs[index], next.songs[index + 1]];
+        saveSetlist(activeSetlistId, next);
+        if (activeSetlistSongIndex === index) activeSetlistSongIndex = index + 1;
+        else if (activeSetlistSongIndex === index + 1) activeSetlistSongIndex = index;
+        if (lastSetlistSongIndex === index) lastSetlistSongIndex = index + 1;
+        else if (lastSetlistSongIndex === index + 1) lastSetlistSongIndex = index;
+        renderSetlistDetail();
+      });
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    })[c]);
+  }
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/\n/g, "&#10;");
+  }
+
+  setlistNameInput.addEventListener("change", updateActiveSetlistMetaFromInputs);
+  setlistNameInput.addEventListener("blur", updateActiveSetlistMetaFromInputs);
+  setlistDateInput.addEventListener("change", updateActiveSetlistMetaFromInputs);
+
+  document.getElementById("create-setlist").addEventListener("click", () => {
+    const input = document.getElementById("new-setlist-name");
+    const name = (input.value || "").trim() || "Untitled";
+    const id = newSetlistId();
+    saveSetlist(id, emptySetlist(name, todayISO()));
+    input.value = "";
+    showSetlistDetail(id);
+  });
+  document.getElementById("new-setlist-name").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") document.getElementById("create-setlist").click();
+  });
+
+  document.getElementById("back-to-setlists").addEventListener("click", () => {
+    updateActiveSetlistMetaFromInputs();
+    showSetlistIndex();
+  });
+  document.getElementById("delete-setlist").addEventListener("click", () => {
+    if (!activeSetlistId) return;
+    const doc = loadSetlist(activeSetlistId);
+    if (!confirm(`Delete setlist “${doc.name || "Untitled"}”?`)) return;
+    deleteSetlist(activeSetlistId);
+    showSetlistIndex();
+  });
+
+  document.getElementById("add-song-btn").addEventListener("click", () => {
+    if (!activeSetlistId) return;
+    const select = document.getElementById("add-song-select");
+    const path = select.value;
+    if (!path) return;
+    fetchMeta(path).then(meta => {
+      const doc = loadSetlist(activeSetlistId);
+      doc.songs.push({ path, key: meta.base_key || "C" });
+      saveSetlist(activeSetlistId, doc);
+      select.value = "";
+      renderSetlistDetail();
+    }).catch(() => {
+      const doc = loadSetlist(activeSetlistId);
+      doc.songs.push({ path, key: "C" });
+      saveSetlist(activeSetlistId, doc);
+      select.value = "";
+      renderSetlistDetail();
+    });
+  });
+
+  if (btnDown) {
+    btnDown.addEventListener("click", () => bumpTranspose(-1));
+  }
+  if (btnUp) {
+    btnUp.addEventListener("click", () => bumpTranspose(1));
+  }
+
+  fileLinks.forEach(link => {
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      const path = link.getAttribute("data-path");
+      if (!path) return;
+      activeSetlistSongIndex = null;
+      openSong(path, null, null);
+    });
+  });
+
+  migrateLegacyNameKeyedSetlists();
+  renderSetlistIndex();
+  updateKeyDisplay();
+  if (sel) {
+    fetchMeta(sel).then(meta => {
+      currentBaseKey = meta.base_key || currentBaseKey;
+      updateKeyDisplay();
+    }).catch(() => {});
+  }
   render();
   startSSE();
 })();
