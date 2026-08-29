@@ -1558,7 +1558,7 @@ MAIN_TEMPLATE = r"""
     showSetlistIndex();
   });
 
-  document.getElementById("add-song-btn").addEventListener("click", () => {
+  function addHighlightedSongToSetlist() {
     if (!activeSetlistId) return;
     const select = document.getElementById("add-song-select");
     const path = select.value;
@@ -1576,7 +1576,9 @@ MAIN_TEMPLATE = r"""
       select.value = "";
       renderSetlistDetail();
     });
-  });
+  }
+
+  document.getElementById("add-song-btn").addEventListener("click", addHighlightedSongToSetlist);
 
   function songOptionLabel(r) {
     if (r.title && r.artist) return `${r.title} — ${r.artist}`;
@@ -1614,6 +1616,7 @@ MAIN_TEMPLATE = r"""
   }
 
   const addSongFilter = document.getElementById("add-song-filter");
+  const addSongSelect = document.getElementById("add-song-select");
   addSongFilter.addEventListener("input", () => {
     clearTimeout(addSongFilterTimer);
     addSongFilterTimer = setTimeout(() => {
@@ -1621,20 +1624,21 @@ MAIN_TEMPLATE = r"""
     }, 180);
   });
   addSongFilter.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const select = document.getElementById("add-song-select");
-      if (!select.value) {
-        const first = Array.from(select.options).find(o => o.value);
-        if (first) select.value = first.value;
-      }
-      if (select.value) document.getElementById("add-song-btn").click();
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (!addSongSelect.value) {
+      const first = Array.from(addSongSelect.options).find(o => o.value);
+      if (first) addSongSelect.value = first.value;
     }
+    if (addSongSelect.value) addHighlightedSongToSetlist();
   });
-  document.getElementById("add-song-select").addEventListener("dblclick", () => {
-    if (document.getElementById("add-song-select").value) {
-      document.getElementById("add-song-btn").click();
-    }
+  addSongSelect.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (addSongSelect.value) addHighlightedSongToSetlist();
+  });
+  addSongSelect.addEventListener("dblclick", () => {
+    if (addSongSelect.value) addHighlightedSongToSetlist();
   });
   refreshAddSongOptions("");
 
