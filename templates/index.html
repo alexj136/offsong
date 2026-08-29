@@ -1,0 +1,126 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ChordPro/OnSong Renderer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+<div class="container">
+  <aside>
+    <div class="header">
+      <div class="brand">🎸 Chord Viewer</div>
+      <div class="controls">
+        <div class="key-display" id="key-display">
+          {% if base_key %}
+            <span>Key</span>
+            <span class="key-main" id="key-main">
+              {% if transpose and current_key and current_key != base_key %}
+                {{ base_key }} → {{ current_key or base_key }}
+              {% else %}
+                {{ base_key }}
+              {% endif %}
+            </span>
+          {% else %}
+            <span class="key-main" id="key-main">Transpose</span>
+          {% endif %}
+        </div>
+        <div class="transpose-buttons">
+          <button id="down" title="Transpose down -1">&#8722;</button>
+          <button id="up" title="Transpose up +1">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="songs" role="tab" aria-selected="true">Songs</button>
+      <button type="button" class="tab" data-tab="setlists" role="tab" aria-selected="false">Setlists</button>
+    </div>
+
+    <div id="panel-songs" class="panel active" role="tabpanel">
+      {% if files %}
+        <div class="songs-list">
+          {% for rel, name in files %}
+            <a class="file {% if selected == rel %}active{% endif %}" data-path="{{ rel }}" href="{{ url_for('index') }}?path={{ rel }}&transpose={{ transpose }}">{{ name }}</a>
+          {% endfor %}
+        </div>
+        <div class="hint">Watching current file for changes…</div>
+      {% else %}
+        <div class="empty">No song files found in this directory. Add .cho/.chordpro/.pro/.onsong/.txt files.</div>
+      {% endif %}
+    </div>
+
+    <div id="panel-setlists" class="panel" role="tabpanel">
+      <div id="setlist-index-view">
+        <div class="create-row">
+          <input id="new-setlist-name" type="text" placeholder="New setlist name" maxlength="80" />
+          <button type="button" id="create-setlist" title="Create setlist">+</button>
+        </div>
+        <div id="setlists-list" class="setlists-list"></div>
+        <div class="hint">Setlists are stored in this browser only (YAML per setlist).</div>
+      </div>
+      <div id="setlist-detail-view" hidden>
+        <div class="setlist-toolbar">
+          <button type="button" class="small" id="back-to-setlists" title="Back">←</button>
+          <button type="button" class="small danger" id="delete-setlist" title="Delete setlist">✕</button>
+        </div>
+        <div class="setlist-meta">
+          <label>
+            <span>Name</span>
+            <input id="setlist-name-input" type="text" maxlength="80" />
+          </label>
+          <label>
+            <span>Date</span>
+            <input id="setlist-date-input" type="date" />
+          </label>
+        </div>
+        <div id="setlist-songs" class="setlist-songs"></div>
+        <div class="add-song-picker">
+          <input id="add-song-filter" type="search" placeholder="Filter by title, artist, lyrics…" autocomplete="off" />
+          <div class="add-row">
+            <select id="add-song-select" size="8">
+              <option value="">Add a song…</option>
+            </select>
+            <button type="button" id="add-song-btn" title="Add song">Add</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+  <main>
+    <div id="notes-pane" class="notes-pane" hidden>
+      <div id="notes-compact" class="notes-compact" hidden>
+        <button type="button" class="note-compact-btn note-compact-setlist" id="compact-setlist-note" title="Add setlist note">+ Setlist note</button>
+        <button type="button" class="note-compact-btn note-compact-song" id="compact-song-note" hidden title="Add song note">+ Song note</button>
+      </div>
+      <section class="note-card note-card-setlist" id="setlist-note-card" hidden>
+        <div class="note-card-header">
+          <span class="note-card-label">Setlist note</span>
+          <button type="button" class="small" id="toggle-setlist-note-edit">Edit</button>
+        </div>
+        <div class="note-card-body" id="setlist-note-view"></div>
+        <textarea id="setlist-note-edit" class="note-card-editor" hidden placeholder="Setlist-wide note… **bold**, __italics__, `code`"></textarea>
+        <div class="note-card-hint" id="setlist-note-hint" hidden>**bold** · __italics__ · `code`</div>
+      </section>
+      <section class="note-card note-card-song" id="song-note-card" hidden>
+        <div class="note-card-header">
+          <span class="note-card-label">Song note</span>
+          <button type="button" class="small" id="toggle-song-note-edit">Edit</button>
+        </div>
+        <div class="note-card-body" id="song-note-view"></div>
+        <textarea id="song-note-edit" class="note-card-editor" hidden placeholder="Note for this song… **bold**, __italics__, `code`"></textarea>
+        <div class="note-card-hint" id="song-note-hint" hidden>**bold** · __italics__ · `code`</div>
+      </section>
+    </div>
+    <div id="song"></div>
+  </main>
+</div>
+<script>
+  window.OFFSONG = {
+    baseKey: {{ (base_key or "")|tojson }}
+  };
+</script>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
