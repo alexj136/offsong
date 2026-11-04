@@ -22,6 +22,11 @@ h1.title { margin: 0 0 6px 0; font-size: 28px; letter-spacing: .5px; }
 .song-body { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 18px; line-height: 1.9; }
 .line { position: relative; }
 .chord { position: relative; top: -1.15em; font-weight: 700; padding: 0 2px; }
+.chords, .chords_chorus, .chords_tab, .chords_chorus_tab { padding-right: 0.75em; }
+/* Mid-word chord: the hyphen filler has zero intrinsic width, so it never widens the
+   column itself; it only grows into (and shows a hyphen in) space the chord forced. */
+.syllable { display: flex; }
+.syllable .hyphen { flex: 1 0 0; width: 0; overflow: hidden; text-align: center; }
 .comment { color: var(--accent-2); margin: 6px 0; font-style: italic; }
 .section { border-left: 3px solid var(--accent); padding-left: 10px; margin: 10px 0; background: rgba(56, 189, 248, 0.06); border-radius: 6px; }
 .section.bridge { border-color: var(--accent-2); background: rgba(167, 139, 250, 0.06); }
@@ -37,6 +42,25 @@ h1.title { margin: 0 0 6px 0; font-size: 28px; letter-spacing: .5px; }
 .key-display { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); }
 .key-main { font-size: 15px; color: var(--fg); font-weight: 600; }
 .transpose-buttons { display: flex; gap: 4px; }
+.view-controls { display: flex; align-items: center; gap: 8px; }
+.view-controls .transpose-buttons { margin-left: auto; }
+button[aria-pressed="true"] { background: #0e1a2f; border-color: var(--accent); color: var(--accent); }
+#song { font-size: calc(12pt + var(--font-offset, 0) * 1pt); }
+
+/* Two pane mode: song fills the remaining height and flows into a second column
+   instead of scrolling. Anything beyond two columns is clipped. */
+main.two-pane { overflow: hidden; }
+main.two-pane #song {
+  flex: 1 1 auto; min-height: 0; overflow: hidden;
+  column-count: 2; column-fill: auto; column-gap: 32px; column-rule: 1px solid #1f2937;
+}
+/* Only wrap between sections. If a section is taller than a column it still has to
+   split, but never through a chord line or straight after a heading. */
+main.two-pane #song .song-section, main.two-pane #song table,
+main.two-pane #song h1, main.two-pane #song h2 { break-inside: avoid; }
+main.two-pane #song h1, main.two-pane #song h2, main.two-pane #song h4 { break-after: avoid; }
+/* display: flow-root stops the first heading's top margin leaking out of its section. */
+main.two-pane #song .song-section { display: flow-root; }
 button { background: #0b1220; color: var(--fg); border: 1px solid #203047; border-radius: 10px; padding: 6px 10px; cursor: pointer; }
 button:hover { background: #0e1a2f; }
 button.danger { border-color: #7f1d1d; color: #fca5a5; }

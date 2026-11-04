@@ -5,6 +5,8 @@
   };
   const NOTE_SHARP = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
   const INDEX_KEY = "offsong:setlists:index";
+  const FONT_MIN = -8;  // points relative to the default song font size
+  const FONT_MAX = 24;
   const FILE_PREFIX = "offsong:setlist:file:";
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -16,15 +18,19 @@
   let lastSetlistSongIndex = null; // remembered across Songs-tab browsing
   let songLoadId = 0; // ignores stale openSong/meta callbacks
   let renderId = 0; // ignores stale /render responses
+  let fontOffset = 0; // points above/below default; persisted per setlist song only
+  let twoPane = false; // two-column song view; persisted per setlist song only
 
   const btnDown = document.getElementById("down");
   const btnUp = document.getElementById("up");
   const songEl = document.getElementById("song");
+  const mainEl = songEl.closest("main");
+  const twoPaneBtn = document.getElementById("two-pane-toggle");
   const keyMain = document.getElementById("key-main");
   const fileLinks = document.querySelectorAll("#panel-songs .file");
   let es = null;
 
-  // ---- YAML codec for setlist files: name / date / note / songs[{path,key,note}] ----
+  // ---- YAML codec for setlist files: name / date / note / songs[{path,key,note,font_offset,two_pane}] ----
   function escapeYamlString(s) {
     if (s === "" || /[:#\n\r\t{}[\],&*!|>'"%@`_]/.test(s) || /^\s|\s$/.test(s)) {
       return JSON.stringify(s);
@@ -38,6 +44,12 @@
       try { return JSON.parse(s.replace(/^'/, '"').replace(/'$/, '"')); } catch (_) { return s.slice(1, -1); }
     }
     return s;
+  }
+
+  function parseFontOffset(v) {
+    const n = parseInt(v, 10);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(FONT_MIN, Math.min(FONT_MAX, n));
   }
 
   function todayISO() {
@@ -66,6 +78,8 @@
       out += `  - path: ${escapeYamlString(song.path || "")}\n`;
       out += `    key: ${escapeYamlString(song.key || "")}\n`;
       out += `    note: ${escapeYamlString(song.note || "")}\n`;
+      out += `    font_offset: ${parseFontOffset(song.font_offset)}\n`;
+      out += `    two_pane: ${song.two_pane ? "true" : "false"}\n`;
     }
     return out;
   }
@@ -85,13 +99,17 @@
         const item = line.match(/^\s*-\s+path\s*:\s*(.*)$/);
         if (item) {
           if (current) songs.push(current);
-          current = { path: parseYamlScalar(item[1]), key: "", note: "" };
+          current = { path: parseYamlScalar(item[1]), key: "", note: "", font_offset: 0, two_pane: false };
           continue;
         }
         const keyLine = line.match(/^\s+key\s*:\s*(.*)$/);
         if (keyLine && current) current.key = parseYamlScalar(keyLine[1]);
         const noteLine = line.match(/^\s+note\s*:\s*(.*)$/);
         if (noteLine && current) current.note = parseYamlScalar(noteLine[1]);
+        const fontLine = line.match(/^\s+font_offset\s*:\s*(.*)$/);
+        if (fontLine && current) current.font_offset = parseFontOffset(parseYamlScalar(fontLine[1]));
+        const twoPaneLine = line.match(/^\s+two_pane\s*:\s*(.*)$/);
+        if (twoPaneLine && current) current.two_pane = parseYamlScalar(twoPaneLine[1]) === "true";
       }
       if (current) songs.push(current);
       doc.songs = songs.filter(s => s.path);
@@ -130,7 +148,7 @@
       const item = line.match(/^\s*-\s+path\s*:\s*(.*)$/);
       if (item) {
         if (current) songs.push(current);
-        current = { path: parseYamlScalar(item[1]), key: "", note: "" };
+        current = { path: parseYamlScalar(item[1]), key: "", note: "", font_offset: 0, two_pane: false };
         continue;
       }
       const keyLine = line.match(/^\s+key\s*:\s*(.*)$/);
@@ -141,6 +159,16 @@
       const noteLine = line.match(/^\s+note\s*:\s*(.*)$/);
       if (noteLine && current) {
         current.note = parseYamlScalar(noteLine[1]);
+        continue;
+      }
+      const fontLine = line.match(/^\s+font_offset\s*:\s*(.*)$/);
+      if (fontLine && current) {
+        current.font_offset = parseFontOffset(parseYamlScalar(fontLine[1]));
+        continue;
+      }
+      const twoPaneLine = line.match(/^\s+two_pane\s*:\s*(.*)$/);
+      if (twoPaneLine && current) {
+        current.two_pane = parseYamlScalar(twoPaneLine[1]) === "true";
       }
     }
     if (current) songs.push(current);
@@ -187,7 +215,9 @@
       songs: Array.isArray(doc.songs) ? doc.songs.map(s => ({
         path: s.path || "",
         key: s.key || "",
-        note: s.note || ""
+        note: s.note || "",
+        font_offset: parseFontOffset(s.font_offset),
+        two_pane: !!s.two_pane
       })) : []
     };
     localStorage.setItem(setlistFileKey(id), setlistToYaml(normalized));
@@ -319,6 +349,17 @@
     sel = path;
     activeSetlistSongIndex = (setlistSongIndex == null) ? null : setlistSongIndex;
     if (setlistSongIndex != null) lastSetlistSongIndex = setlistSongIndex;
+    let font = 0;
+    let twoPane = false;
+    if (setlistSongIndex != null && activeSetlistId) {
+      const song = loadSetlist(activeSetlistId).songs[setlistSongIndex];
+      if (song && song.path === path) {
+        font = song.font_offset;
+        twoPane = song.two_pane;
+      }
+    }
+    setFontOffset(font);
+    setTwoPane(twoPane);
     setActiveSongLink(path);
     startSSE();
     syncNotesPane();
@@ -399,6 +440,38 @@
     updateKeyDisplay();
     render();
     persistActiveSetlistKeyFromTranspose();
+  }
+
+  function setFontOffset(n) {
+    fontOffset = parseFontOffset(n);
+    songEl.style.setProperty("--font-offset", String(fontOffset));
+  }
+
+  function setTwoPane(on) {
+    twoPane = !!on;
+    mainEl.classList.toggle("two-pane", twoPane);
+    twoPaneBtn.setAttribute("aria-pressed", twoPane ? "true" : "false");
+    if (twoPane) mainEl.scrollTop = 0;
+  }
+
+  // Only songs opened from a setlist remember view settings; Songs-tab changes are temporary.
+  function persistSetlistSongField(field, value) {
+    const idx = setlistSongIndexForPersist();
+    if (!activeSetlistId || idx == null || !sel) return;
+    const doc = loadSetlist(activeSetlistId);
+    if (!doc.songs[idx] || doc.songs[idx].path !== sel) return;
+    doc.songs[idx][field] = value;
+    saveSetlist(activeSetlistId, doc);
+  }
+
+  function bumpFont(delta) {
+    setFontOffset(fontOffset + delta);
+    persistSetlistSongField("font_offset", fontOffset);
+  }
+
+  function toggleTwoPane() {
+    setTwoPane(!twoPane);
+    persistSetlistSongField("two_pane", twoPane);
   }
 
   // ---- Tabs ----
@@ -810,13 +883,13 @@
     if (!path) return;
     fetchMeta(path).then(meta => {
       const doc = loadSetlist(activeSetlistId);
-      doc.songs.push({ path, key: meta.base_key || "C", note: "" });
+      doc.songs.push({ path, key: meta.base_key || "C", note: "", font_offset: 0, two_pane: false });
       saveSetlist(activeSetlistId, doc);
       select.value = "";
       renderSetlistDetail();
     }).catch(() => {
       const doc = loadSetlist(activeSetlistId);
-      doc.songs.push({ path, key: "C", note: "" });
+      doc.songs.push({ path, key: "C", note: "", font_offset: 0, two_pane: false });
       saveSetlist(activeSetlistId, doc);
       select.value = "";
       renderSetlistDetail();
@@ -893,6 +966,10 @@
   if (btnUp) {
     btnUp.addEventListener("click", () => bumpTranspose(1));
   }
+  twoPaneBtn.addEventListener("click", toggleTwoPane);
+  document.getElementById("font-down").addEventListener("click", () => bumpFont(-1));
+  document.getElementById("font-up").addEventListener("click", () => bumpFont(1));
+  document.getElementById("font-reset").addEventListener("click", () => bumpFont(-fontOffset));
 
   fileLinks.forEach(link => {
     link.addEventListener("click", (e) => {

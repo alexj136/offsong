@@ -13,7 +13,7 @@ and automatically updates the rendering when the underlying file changes.
   - Inline [Chord] notation with clean, readable styling
   - Optional transposition via query string (?transpose=+2 or ?transpose=-3)
   - Live reload in the browser when the file changes (via Server‑Sent Events + watchdog)
-  - Client-side setlists (YAML in localStorage): name, date, note, and songs[{path, key, note}]; no server writes
+  - Client-side setlists (YAML in localStorage): name, date, note, and songs[{path, key, note, font_offset, two_pane}]; no server writes
 
 - Quick start
   1) Install deps:  pip install flask watchdog

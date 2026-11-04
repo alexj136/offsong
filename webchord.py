@@ -66,6 +66,15 @@ def bailout(msg: str) -> None:
     sys.exit(0)
 
 
+def _splits_word(segment: str, next_segment: str) -> bool:
+    """True if a chord between these two lyric segments falls inside a word."""
+    if not segment or not next_segment:
+        return False
+    if segment.endswith("&nbsp;") or next_segment.startswith("&nbsp;"):
+        return False
+    return segment[-1].isalnum() and next_segment[0].isalnum()
+
+
 def parse_chopro_line(line: str, mode: int) -> str:
     """
     Parse a single ChordPro content line (not a directive).
@@ -132,8 +141,17 @@ def parse_chopro_line(line: str, mode: int) -> str:
     out.append("</TR>")
     # Lyrics row
     out.append("<TR>")
-    for l in lyrics:
-        out.append(f'<TD class="{l_classes[mode]}">{l}</TD>')
+    for i, l in enumerate(lyrics):
+        nxt = lyrics[i + 1] if i + 1 < len(lyrics) else ""
+        if _splits_word(l, nxt):
+            # A chord lands mid-word. If the chord above forces this cell wider
+            # than the syllable, the filler shows a hyphen in the gap (sa-tis-fied).
+            out.append(
+                f'<TD class="{l_classes[mode]}"><DIV class="syllable">'
+                f'<SPAN>{l}</SPAN><SPAN class="hyphen">-</SPAN></DIV></TD>'
+            )
+        else:
+            out.append(f'<TD class="{l_classes[mode]}">{l}</TD>')
     out.append("</TR></TABLE>\n")
     return "".join(out)
 
@@ -177,6 +195,8 @@ def chopro2html(chopro: str) -> str:
         ".comment, .comment_italic, .comment_box { background-color: #ffbbaa; }\n"
         ".comment_italic { font-style: italic; }\n"
         ".comment_box { border: solid; }\n"
+        ".syllable { display: flex; }\n"
+        ".hyphen { flex: 1 0 0; width: 0; overflow: hidden; text-align: center; }\n"
         "--></STYLE>\n"
         "</HEAD><BODY>\n"
         "<!--\nConverted from ChordPro format with Web Chord (Python port)\n-->\n"
@@ -184,12 +204,23 @@ def chopro2html(chopro: str) -> str:
 
     mode = 0  # 0 normal, 1 chorus, 2 normal+tab, 3 chorus+tab
 
+    # Lines are grouped into section blocks (verse, chorus, bridge...) so that
+    # multi-column layouts can avoid breaking in the middle of a section.
+    # A section ends at a blank line, and a new one starts at a heading,
+    # comment or chorus/tab marker.
+    section: List[str] = []
+
+    def flush() -> None:
+        if section:
+            out.append('<DIV class="song-section">' + "".join(section) + "</DIV>\n")
+            section.clear()
+
     for raw_line in chopro.splitlines():
         line = raw_line.rstrip("\n")
 
         # Comment line starting with #
         if line.startswith("#"):
-            out.append(f"<!--{line[1:]}-->\n")
+            (section or out).append(f"<!--{line[1:]}-->\n")
             continue
 
         # Command line enclosed in { }
@@ -199,38 +230,48 @@ def chopro2html(chopro: str) -> str:
 
             # Title
             if lower.startswith("title:") or lower.startswith("t:"):
+                flush()
                 value = inner.split(":", 1)[1]
                 out.append(f"<H1>{value}</H1>\n")
             # Artist (rendered similar to subtitle, under the title)
             elif lower.startswith("artist:") or lower.startswith("a:"):
+                flush()
                 value = inner.split(":", 1)[1]
                 out.append(f"<H2>{value}</H2>\n")
             # Subtitle
             elif lower.startswith("subtitle:") or lower.startswith("st:"):
+                flush()
                 value = inner.split(":", 1)[1]
                 out.append(f"<H2>{value}</H2>\n")
             # Chorus markers
             elif lower.startswith("start_of_chorus") or lower.startswith("soc"):
+                flush()
                 mode |= 1
             elif lower.startswith("end_of_chorus") or lower.startswith("eoc"):
+                flush()
                 mode &= ~1
             # Comments
             elif lower.startswith("comment_italic:") or lower.startswith("ci:"):
+                flush()
                 value = inner.split(":", 1)[1]
-                out.append(f'<P class="comment_italic">{value}</P>\n')
+                section.append(f'<P class="comment_italic">{value}</P>\n')
             elif lower.startswith("comment_box:") or lower.startswith("cb:"):
+                flush()
                 value = inner.split(":", 1)[1]
-                out.append(f'<P class="comment_box">{value}</P>\n')
+                section.append(f'<P class="comment_box">{value}</P>\n')
             elif lower.startswith("comment:") or lower.startswith("c:"):
+                flush()
                 value = inner.split(":", 1)[1]
-                out.append(f'<P class="comment">{value}</P>\n')
+                section.append(f'<P class="comment">{value}</P>\n')
             # Tab markers
             elif lower.startswith("start_of_tab") or lower.startswith("sot"):
+                flush()
                 mode |= 2
             elif lower.startswith("end_of_tab") or lower.startswith("eot"):
+                flush()
                 mode &= ~2
             else:
-                out.append(f"<!--Unsupported command: {inner}-->\n")
+                (section or out).append(f"<!--Unsupported command: {inner}-->\n")
             continue
 
         # Standalone section headings like "Chorus:", "Chorus 1:", "Verse 2:", "Bridge:", "Pre-Chorus:", etc.
@@ -239,12 +280,24 @@ def chopro2html(chopro: str) -> str:
         if heading_match:
             # Strip trailing colon and whitespace for display
             heading_text = heading_match.group(1).strip()
-            out.append(f"<H4>{heading_text}</H4>\n")
+            flush()
+            section.append(f"<H4>{heading_text}</H4>\n")
             continue
 
         # Regular line with chords/lyrics
-        out.append(parse_chopro_line(line, mode))
+        rendered = parse_chopro_line(line, mode)
+        if rendered == "<BR>\n":
+            # Blank line ends the section; keep the gap inside it so a column
+            # break never leaves an empty line at the top of the next column.
+            if section:
+                section.append(rendered)
+                flush()
+            else:
+                out.append(rendered)
+            continue
+        section.append(rendered)
 
+    flush()
     out.append("</BODY></HTML>")
     return "".join(out)
 
