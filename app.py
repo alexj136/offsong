@@ -359,18 +359,12 @@ def render_song():
         if body_tag_end != -1 and body_end != -1 and body_end > body_tag_end:
             fragment = full_html[body_tag_end + 1 : body_end]
 
-    # Prepend a metadata block showing the key, updated when transposed.
+    # Prepend a metadata block showing the key the song is currently shown in.
     if base_key:
-        base_clean = base_key.strip()
-        label = f"Key: {html.escape(base_clean)}"
+        current_key = base_key.strip()
         if transpose:
-            current_key = transpose_chord(base_clean, transpose, prefer)
-            if current_key != base_clean:
-                label = (
-                    f"Key: {html.escape(base_clean)} "
-                    f"→ {html.escape(current_key)}"
-                )
-        meta_html = f'<div class="meta">{label}</div>'
+            current_key = transpose_chord(current_key, transpose, prefer)
+        meta_html = f'<div class="meta">Key: {html.escape(current_key)}</div>'
         fragment = meta_html + fragment
 
     return fragment

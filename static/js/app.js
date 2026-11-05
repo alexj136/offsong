@@ -26,7 +26,6 @@
   const songEl = document.getElementById("song");
   const mainEl = songEl.closest("main");
   const twoPaneBtn = document.getElementById("two-pane-toggle");
-  const keyMain = document.getElementById("key-main");
   const fileLinks = document.querySelectorAll("#panel-songs .file");
   let es = null;
 
@@ -286,18 +285,6 @@
     return NOTE_SHARP[((a + semitones) % 12 + 12) % 12];
   }
 
-  function updateKeyDisplay() {
-    if (!keyMain) return;
-    if (currentBaseKey) {
-      const cur = applyTransposeToKey(currentBaseKey, transpose) || currentBaseKey;
-      keyMain.textContent = (transpose && cur !== currentBaseKey)
-        ? `${currentBaseKey} → ${cur}`
-        : currentBaseKey;
-    } else {
-      keyMain.textContent = transpose ? `Transpose ${transpose > 0 ? "+" : ""}${transpose}` : "Transpose";
-    }
-  }
-
   function fetchMeta(path) {
     return fetch(`/meta?path=${encodeURIComponent(path)}`)
       .then(r => { if (!r.ok) throw new Error("meta " + r.status); return r.json(); });
@@ -315,7 +302,6 @@
       .then(html => {
         if (id !== renderId) return;
         songEl.innerHTML = html;
-        updateKeyDisplay();
       })
       .catch(err => {
         if (id !== renderId) return;
@@ -369,7 +355,6 @@
       currentBaseKey = meta.base_key || null;
       // If the user already transposed (or opened another song), keep their transpose
       if (loadId !== songLoadId) {
-        updateKeyDisplay();
         syncNotesPane();
         return;
       }
@@ -380,7 +365,6 @@
         transpose = 0;
       }
       updateLocation();
-      updateKeyDisplay();
       render();
       renderSetlistDetail();
       syncNotesPane();
@@ -389,7 +373,6 @@
       currentBaseKey = null;
       transpose = 0;
       updateLocation();
-      updateKeyDisplay();
       render();
       syncNotesPane();
     });
@@ -428,7 +411,6 @@
     fetchMeta(sel).then(meta => {
       currentBaseKey = meta.base_key || null;
       apply(currentBaseKey);
-      updateKeyDisplay();
     }).catch(() => {});
   }
 
@@ -437,7 +419,6 @@
     songLoadId++;
     transpose = (Number(transpose) || 0) + delta;
     updateLocation();
-    updateKeyDisplay();
     render();
     persistActiveSetlistKeyFromTranspose();
   }
@@ -984,11 +965,9 @@
 
   migrateLegacyNameKeyedSetlists();
   renderSetlistIndex();
-  updateKeyDisplay();
   if (sel) {
     fetchMeta(sel).then(meta => {
       currentBaseKey = meta.base_key || currentBaseKey;
-      updateKeyDisplay();
     }).catch(() => {});
   }
   render();

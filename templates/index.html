@@ -12,20 +12,7 @@
     <div class="header">
       <div class="brand">🎸 Chord Viewer</div>
       <div class="controls">
-        <div class="key-display" id="key-display">
-          {% if base_key %}
-            <span>Key</span>
-            <span class="key-main" id="key-main">
-              {% if transpose and current_key and current_key != base_key %}
-                {{ base_key }} → {{ current_key or base_key }}
-              {% else %}
-                {{ base_key }}
-              {% endif %}
-            </span>
-          {% else %}
-            <span class="key-main" id="key-main">Transpose</span>
-          {% endif %}
-        </div>
+        <span class="transpose-label">Transpose</span>
         <div class="transpose-buttons">
           <button id="down" title="Transpose down -1">&#8722;</button>
           <button id="up" title="Transpose up +1">+</button>
@@ -34,10 +21,13 @@
     </div>
     <div class="view-controls">
       <button type="button" id="two-pane-toggle" aria-pressed="false" title="Split the song into two columns">Two pane</button>
-      <div class="transpose-buttons">
-        <button id="font-down" title="Smaller text (-1pt)">Font&#8722;</button>
-        <button id="font-reset" title="Reset text to default size">Font=</button>
-        <button id="font-up" title="Larger text (+1pt)">Font+</button>
+      <div class="controls">
+        <span class="transpose-label">Font</span>
+        <div class="transpose-buttons">
+          <button id="font-down" title="Smaller text (-1pt)">&#8722;</button>
+          <button id="font-reset" title="Reset text to default size">0</button>
+          <button id="font-up" title="Larger text (+1pt)">+</button>
+        </div>
       </div>
     </div>
 
